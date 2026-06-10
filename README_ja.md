@@ -1,6 +1,5 @@
 # SuperMerger-ForgeNeo-Anima
 - このforkでは ForgeNeo と Anima への対応を追加しています。
-- このforkの変更の大半は Codex に実装してもらったため、挙動や記載内容の正確性について責任を負えません。
 - Forge Neo 互換性の追加修正（lora_in_memory_limit / lora_not_found オプションのガード、LoKr LoRA のマージ対応）、および日本語の UI テキストとコメントの英語訳。
 
 # SuperMerger
