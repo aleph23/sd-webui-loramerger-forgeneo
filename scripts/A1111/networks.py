@@ -18,8 +18,13 @@ import scripts.A1111.network_oft as network_oft
 import torch
 from typing import Union
 
-from modules import shared, devices, sd_models, errors, scripts, sd_hijack, launch_utils
+from modules import shared, devices, sd_models, errors, scripts, launch_utils
 import modules.textual_inversion.textual_inversion as textual_inversion
+
+try:
+  from modules import sd_hijack
+except (ImportError, ModuleNotFoundError):
+  sd_hijack = None
 
 class QkvLinear(torch.nn.Linear):
     pass
@@ -35,7 +40,7 @@ module_types = [
     network_oft.ModuleTypeOFT(),
 ]
 
-forge = launch_utils.git_tag()[0:2] == "f2"
+forge = hasattr(sd_models, "forge_model_reload") or launch_utils.git_tag()[0:2] == "f2"
 
 re_digits = re.compile(r"\d+")
 re_x_proj = re.compile(r"(.*)_([qkv]_proj)$")
@@ -52,6 +57,218 @@ suffix_conversion = {
         "conv_shortcut": "skip_connection",
     }
 }
+
+ANIMA_KEY_MARKERS = (
+    "lora_unet_blocks_",
+    "lora_unet_patch_embed",
+    "lora_unet_final_layer",
+    "lora_unet_t_embedder",
+    "lora_te1_layers_",
+    "lora_te_text_encoders_",
+    "lora_te_llm_adapter_",
+)
+ANIMA_QWEN_ALIAS_TO_DOT = {
+    "text_encoders_qwen25_7b_": "text_encoders.qwen25_7b.",
+    "text_encoders_qwen3_06b_transformer_": "text_encoders.qwen3_06b.transformer.",
+    "text_encoders_qwen3_transformer_": "text_encoders.qwen3.transformer.",
+}
+
+def is_anima_lora_key(key):
+    return any(marker in key for marker in ANIMA_KEY_MARKERS)
+
+def register_network_alias(mapping, alias, module):
+    if alias and alias not in mapping:
+        mapping[alias] = module
+
+def anima_mlp_alias_variants(value):
+    variants = {value}
+    replacements = (
+        (".mlp.0.", ".mlp.layer1."),
+        (".mlp.2.", ".mlp.layer2."),
+        ("_mlp_0_", "_mlp_layer1_"),
+        ("_mlp_2_", "_mlp_layer2_"),
+    )
+    changed = True
+    while changed:
+        changed = False
+        current = list(variants)
+        for item in current:
+            for source, target in replacements:
+                if source in item and item.replace(source, target) not in variants:
+                    variants.add(item.replace(source, target))
+                    changed = True
+                if target in item and item.replace(target, source) not in variants:
+                    variants.add(item.replace(target, source))
+                    changed = True
+    return variants
+
+def _anima_join_tokens(tokens):
+    parts = []
+    i = 0
+    while i < len(tokens):
+        if i + 3 < len(tokens) and tokens[i] == "adaln" and tokens[i + 1] == "modulation" and tokens[i + 2] in {"cross", "self"} and tokens[i + 3] == "attn":
+            parts.append(f"adaln_modulation_{tokens[i + 2]}_attn")
+            i += 4
+            continue
+        if i + 2 < len(tokens) and tokens[i] == "adaln" and tokens[i + 1] == "modulation":
+            parts.append(f"adaln_modulation_{tokens[i + 2]}")
+            i += 3
+            continue
+        if i + 1 < len(tokens) and tokens[i] in {"cross", "self"} and tokens[i + 1] == "attn":
+            parts.append(f"{tokens[i]}_attn")
+            i += 2
+            continue
+        if i + 1 < len(tokens) and tokens[i] in {"q", "k"} and tokens[i + 1] == "norm":
+            parts.append(f"{tokens[i]}_norm")
+            i += 2
+            continue
+        if i + 1 < len(tokens) and tokens[i] in {"q", "k", "v", "output"} and tokens[i + 1] == "proj":
+            parts.append(f"{tokens[i]}_proj")
+            i += 2
+            continue
+        parts.append(tokens[i])
+        i += 1
+    return parts
+
+def anima_dot_name_from_alias(alias):
+    prefixes = ("model_diffusion_model_", "diffusion_model_")
+    for prefix in prefixes:
+        if alias.startswith(prefix):
+            suffix = alias[len(prefix):]
+            tokens = _anima_join_tokens(suffix.split("_"))
+            return prefix.rstrip("_") + "." + ".".join(tokens)
+    if alias.startswith("llm_adapter_"):
+        suffix = alias[len("llm_adapter_"):]
+        tokens = _anima_join_tokens(suffix.split("_"))
+        return "llm_adapter." + ".".join(tokens)
+    for prefix, dot_prefix in ANIMA_QWEN_ALIAS_TO_DOT.items():
+        if alias.startswith(prefix):
+            suffix = alias[len(prefix):]
+            tokens = _anima_join_tokens(suffix.split("_"))
+            return dot_prefix + ".".join(tokens)
+    if alias.startswith("text_encoders_"):
+        suffix = alias[len("text_encoders_"):]
+        tokens = _anima_join_tokens(suffix.split("_"))
+        return "text_encoders." + ".".join(tokens)
+    return None
+
+def anima_aliases_from_module_name(network_name):
+    aliases = {network_name}
+    dot_name = anima_dot_name_from_alias(network_name)
+    if dot_name:
+        aliases.add(dot_name)
+    aliases.update(anima_mlp_alias_variants(network_name))
+    if dot_name:
+        aliases.update(anima_mlp_alias_variants(dot_name))
+
+    if network_name.startswith("model_diffusion_model_"):
+        suffix = network_name.split("model_diffusion_model_", 1)[1]
+        aliases.add(suffix)
+        aliases.add(f"diffusion_model_{suffix}")
+        suffix_dot = anima_dot_name_from_alias(f"diffusion_model_{suffix}")
+        if suffix_dot:
+            aliases.add(suffix_dot)
+        model_dot = anima_dot_name_from_alias(network_name)
+        if model_dot:
+            aliases.add(model_dot.split("model_diffusion_model.", 1)[1])
+
+    if network_name.startswith("text_encoders_"):
+        aliases.add(network_name.split("text_encoders_", 1)[1])
+        text_dot = anima_dot_name_from_alias(network_name)
+        if text_dot:
+            aliases.add(text_dot.split("text_encoders.", 1)[1])
+
+    if network_name.startswith("llm_adapter_"):
+        aliases.add(network_name.split("llm_adapter_", 1)[1])
+        llm_dot = anima_dot_name_from_alias(network_name)
+        if llm_dot:
+            aliases.add(llm_dot)
+            aliases.add(llm_dot.split("llm_adapter.", 1)[1])
+
+    if "_llm_adapter_" in network_name and not network_name.startswith("llm_adapter_"):
+        llm_name = "llm_adapter_" + network_name.split("_llm_adapter_", 1)[1]
+        aliases.add(llm_name)
+        aliases.add(f"diffusion_model_{llm_name}")
+        aliases.add(f"model_diffusion_model_{llm_name}")
+        llm_dot = anima_dot_name_from_alias(llm_name)
+        if llm_dot:
+            aliases.add(llm_dot)
+            aliases.add(f"diffusion_model.{llm_dot}")
+            aliases.add(f"model.diffusion_model.{llm_dot}")
+            aliases.add(llm_dot.split("llm_adapter.", 1)[1])
+
+    if network_name.startswith("model_layers_") or "_model_layers_" in network_name:
+        if network_name.startswith("model_layers_"):
+            model_layers_name = network_name
+        else:
+            model_layers_name = "model_layers_" + network_name.split("_model_layers_", 1)[1]
+
+        aliases.add(model_layers_name)
+        aliases.add(model_layers_name.split("model_", 1)[1])
+        aliases.add(f"layers_{model_layers_name.split('model_layers_', 1)[1]}")
+
+        model_dot = anima_dot_name_from_alias(network_name)
+        if model_dot:
+            aliases.add(model_dot)
+            if ".model.layers." in model_dot:
+                aliases.add("model.layers." + model_dot.split(".model.layers.", 1)[1])
+                aliases.add("layers." + model_dot.split(".model.layers.", 1)[1])
+            elif model_dot.startswith("model."):
+                aliases.add(model_dot.split("model.", 1)[1])
+
+    if network_name.startswith("layers_"):
+        aliases.add(f"model_{network_name}")
+        aliases.add(f"text_encoders_{network_name}")
+        aliases.add(f"llm_adapter_{network_name}")
+
+    return aliases
+
+def find_anima_module(mapping, key):
+    candidates = [key]
+    dot_key = anima_dot_name_from_alias(key)
+    if dot_key:
+        candidates.append(dot_key)
+
+    if "." in key:
+        candidates.append(key.replace(".", "_"))
+    else:
+        underscored_dot = anima_dot_name_from_alias(key.replace(".", "_"))
+        if underscored_dot:
+            candidates.append(underscored_dot)
+
+    if key.startswith("layers_"):
+        candidates.append(f"model_{key}")
+        candidates.append(f"text_encoders_{key}")
+        candidates.append(f"llm_adapter_{key}")
+    elif key.startswith("model_layers_"):
+        candidates.append(key.split("model_", 1)[1])
+    elif key.startswith("text_encoders_"):
+        candidates.append(key.split("text_encoders_", 1)[1])
+    elif key.startswith("llm_adapter_"):
+        candidates.append(key.split("llm_adapter_", 1)[1])
+    elif ".model.layers." in key:
+        suffix = key.split(".model.layers.", 1)[1]
+        candidates.append(f"model.layers.{suffix}")
+        candidates.append(f"layers.{suffix}")
+        candidates.append(f"model_layers_{suffix.replace('.', '_')}")
+        candidates.append(f"layers_{suffix.replace('.', '_')}")
+    elif key.startswith("text_encoders.") and ".transformer.model.layers." in key:
+        suffix = key.split(".transformer.model.layers.", 1)[1]
+        candidates.append(f"model.layers.{suffix}")
+        candidates.append(f"layers.{suffix}")
+        candidates.append(f"model_layers_{suffix.replace('.', '_')}")
+        candidates.append(f"layers_{suffix.replace('.', '_')}")
+
+    for candidate in candidates:
+        for variant in anima_mlp_alias_variants(candidate):
+            module = mapping.get(variant)
+            if module is not None:
+                return module, variant
+        module = mapping.get(candidate)
+        if module is not None:
+            return module, candidate
+
+    return None, key
 
 
 def convert_diffusers_name_to_compvis(key, is_sd2):
@@ -120,6 +337,9 @@ def convert_diffusers_name_to_compvis(key, is_sd2):
     if match(m, r"lora_te1_text_model_encoder_layers_(\d+)_(.+)"):
         return f"clip_l_transformer_text_model_encoder_layers_{m[0]}_{m[1]}"
 
+    if match(m, r"lora_te1_layers_(\d+)_(.+)"):
+        return f"layers_{m[0]}_{m[1]}"
+
     if match(m, r"lora_te3_text_model_encoder_layers_(\d+)_(.+)"):
         if 'mlp_fc1' in m[1]:
             return f"t5xxl_transformer_text_model_encoder_layers_{m[0]}layer{m[1]}SelfAttention_k"
@@ -128,6 +348,22 @@ def convert_diffusers_name_to_compvis(key, is_sd2):
     if match_pattern:
         block_num, layer_num, suffix = match_pattern.groups()
         return f"t5xxl_transformer_encoder_block_{block_num}_layer_{layer_num}_{suffix}"
+
+    if key.startswith("lora_unet_") and is_anima_lora_key(key):
+        return "model_diffusion_model_" + key.split("lora_unet_", 1)[1]
+
+    if key.startswith("oft_unet_") and (
+        "blocks_" in key or "patch_embed" in key or "final_layer" in key or "t_embedder" in key
+    ):
+        return "model_diffusion_model_" + key.split("oft_unet_", 1)[1]
+
+    if key.startswith("lora_te_") and (
+        "text_encoders_" in key or "llm_adapter_" in key
+    ):
+        return key.split("lora_te_", 1)[1]
+
+    if match(m, r"lora_te_layers_(\d+)_(.+)"):
+        return f"layers_{m[0]}_{m[1]}"
     
     return key
 
@@ -150,7 +386,7 @@ def assign_network_names_to_compvis_modules(sd_model):
                     network_name = network_name.replace("self_attn", "attn")
                     network_name = network_name.replace('mlp_fc2', 'mlp_c_proj')
                     network_name = network_name.replace('mlp_fc1', 'mlp_c_fc')
-                network_layer_mapping[network_name] = module
+                register_network_alias(network_layer_mapping, network_name, module)
                 module.network_layer_name = network_name
 
     else:
@@ -158,12 +394,14 @@ def assign_network_names_to_compvis_modules(sd_model):
 
         for name, module in cond_stage_model.named_modules():
             network_name = name.replace(".", "_")
-            network_layer_mapping[network_name] = module
+            for alias in anima_aliases_from_module_name(network_name):
+                register_network_alias(network_layer_mapping, alias, module)
             module.network_layer_name = network_name
 
     for name, module in shared.sd_model.forge_objects.unet.model.named_modules() if forge else shared.sd_model.model.named_modules():
         network_name = name.replace(".", "_")
-        network_layer_mapping[network_name] = module
+        for alias in anima_aliases_from_module_name(network_name):
+            register_network_alias(network_layer_mapping, alias, module)
         module.network_layer_name = network_name
 
     sd_model.network_layer_mapping = network_layer_mapping
@@ -213,10 +451,35 @@ def load_network(name, network_on_disk, isxl, is_sd2):
     for key_network, weight in sd.items():
 
         if diffusers_weight_map:
-            key_network_without_network_parts, network_name, network_weight = key_network.rsplit(".", 2)
-            network_part = network_name + '.' + network_weight
+            network_parts = key_network.rsplit(".", 2)
+            if len(network_parts) == 3:
+                key_network_without_network_parts, network_name, network_weight = network_parts
+                network_part = network_name + '.' + network_weight
+            elif len(network_parts) == 2:
+                key_network_without_network_parts, network_part = network_parts
+            else:
+                key_network_without_network_parts = key_network
+                network_part = ""
         else:
-            key_network_without_network_parts, _, network_part = key_network.partition(".")
+            network_part_suffixes = {
+                "alpha", "scale", "bias", "diff", "diff_b",
+                "w_norm", "b_norm",
+                "lokr_w1", "lokr_w1_a", "lokr_w1_b",
+                "lokr_w2", "lokr_w2_a", "lokr_w2_b",
+                "lokr_t2",
+            }
+            if key_network.rsplit(".", 1)[-1] in network_part_suffixes:
+                key_network_without_network_parts, network_part = key_network.rsplit(".", 1)
+            else:
+                network_parts = key_network.rsplit(".", 2)
+                if len(network_parts) == 3:
+                    key_network_without_network_parts, network_name, network_weight = network_parts
+                    network_part = network_name + "." + network_weight
+                elif len(network_parts) == 2:
+                    key_network_without_network_parts, network_part = network_parts
+                else:
+                    key_network_without_network_parts = key_network
+                    network_part = ""
 
         if key_network_without_network_parts == "bundle_emb":
             emb_name, vec_name = network_part.split(".", 1)
@@ -265,6 +528,9 @@ def load_network(name, network_on_disk, isxl, is_sd2):
             sd_module = shared.sd_model.network_layer_mapping.get(key, None)
 
         if sd_module is None:
+            sd_module, key = find_anima_module(shared.sd_model.network_layer_mapping, key)
+
+        if sd_module is None:
             keys_failed_to_match[key_network] = key
             continue
 
@@ -301,7 +567,8 @@ def load_network(name, network_on_disk, isxl, is_sd2):
 
 
 def purge_networks_from_memory():
-    while len(networks_in_memory) > shared.opts.lora_in_memory_limit and len(networks_in_memory) > 0:
+    _lora_limit = getattr(shared.opts, "lora_in_memory_limit", 0)
+    while len(networks_in_memory) > _lora_limit and len(networks_in_memory) > 0:
         name = next(iter(networks_in_memory))
         networks_in_memory.pop(name, None)
 
@@ -385,9 +652,9 @@ def load_networks(names, te_multipliers=None, unet_multipliers=None, dyn_dims=No
     if failed_to_load_networks:
         lora_not_found_message = f'Lora not found: {", ".join(failed_to_load_networks)}'
         sd_hijack.model_hijack.comments.append(lora_not_found_message)
-        if shared.opts.lora_not_found_warning_console:
+        if getattr(shared.opts, "lora_not_found_warning_console", False):
             print(f'\n{lora_not_found_message}\n')
-        if shared.opts.lora_not_found_gradio_warning:
+        if getattr(shared.opts, "lora_not_found_gradio_warning", False):
             gr.Warning(lora_not_found_message)
 
     purge_networks_from_memory()

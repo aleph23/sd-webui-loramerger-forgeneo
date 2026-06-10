@@ -1,3 +1,6 @@
+# SuperMerger-Forge-Neo
+Additional Forge Neo compatibility fixes (lora_in_memory_limit / lora_not_found option guards, LoKr LoRA merge support) and English translation of the Japanese UI text and comments.
+
 # SuperMerger
 - Model merge extention for [AUTOMATIC1111's stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui) 
 - Merge models can be loaded directly for generation without saving

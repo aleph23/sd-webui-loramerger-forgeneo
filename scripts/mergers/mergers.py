@@ -27,7 +27,10 @@ from modules.ui import  plaintext_to_html
 from modules.shared import opts, cmd_opts
 from modules.sd_models import unload_model_weights
 from modules.processing import create_infotext,Processed
-from modules.generation_parameters_copypaste import create_override_settings_dict
+try:
+    from modules.infotext_utils import create_override_settings_dict
+except ImportError:
+    from modules.generation_parameters_copypaste import create_override_settings_dict
 from scripts.mergers.model_util import filenamecutter,savemodel
 from math import ceil
 import sys
@@ -62,6 +65,7 @@ if forge or neo:
 revert_target = ""
 orig_cache = 0
 modelcache = collections.OrderedDict()
+merged_state_dict_override = None
 
 from inspect import currentframe
 
@@ -135,9 +139,12 @@ def smergegen(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,m
 
     save = True if SAVEMODES[0] in save_sets else False
 
-    result = savemodel(theta_0,currentmodel,custom_name,save_sets,metadata) if save else "Merged model loaded:"+currentmodel
-
-    model_loader(checkpoint_info, theta_0, metadata, currentmodel)
+    if save and (forge or neo):
+        model_loader(checkpoint_info, theta_0, metadata, currentmodel)
+        result = forge_save(custom_name if custom_name else currentmodel, save_sets)
+    else:
+        result = savemodel(theta_0,currentmodel,custom_name,save_sets,metadata) if save else "Merged model loaded:"+currentmodel
+        model_loader(checkpoint_info, theta_0, metadata, currentmodel)
 
     cachedealer(False)
 
@@ -164,6 +171,35 @@ def smergegen(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,m
 
 def checkpointer_infomer(name):
     return sd_models.get_closet_checkpoint_match(name)
+
+def normalize_anima_merge_state_dict(state_dict):
+    if any(k.startswith("model.diffusion_model.") for k in state_dict.keys()):
+        return state_dict
+
+    remapped = {}
+    changed = False
+    for key, value in state_dict.items():
+        if key.startswith("net."):
+            remapped["model.diffusion_model." + key[len("net."):]] = value
+            changed = True
+        elif key.startswith("blocks.") or key.startswith("patch_embed.") or key.startswith("final_layer.") or key.startswith("t_embedder."):
+            remapped["model.diffusion_model." + key] = value
+            changed = True
+        else:
+            remapped[key] = value
+
+    if changed:
+        return remapped
+
+    return state_dict
+
+
+def is_anima_state_dict(state_dict):
+    return any(marker in key for key in state_dict.keys() for marker in ANIMA_MODEL_KEY_MARKERS)
+
+
+def mbw_value_or_default(weights, index, default):
+    return weights[index] if 0 <= index < len(weights) else default
 
 # XXX hack. fake checkpoint_info
 def fake_checkpoint_info(checkpoint_info,metadata={},currentmodel=""):
@@ -210,6 +246,17 @@ BLOCKIDXL=['BASE', 'IN0', 'IN1', 'IN2', 'IN3', 'IN4', 'IN5', 'IN6', 'IN7', 'IN8'
 BLOCKIDXLLL=["CLIPL","CLIPG","IN0","IN00","IN10","IN20","IN30","IN40","IN41","IN410","IN411","IN50","IN51","IN510","IN511","IN60","IN70","IN71","IN710","IN711","IN712","IN713","IN714","IN715","IN716","IN717","IN718","IN719","IN80","IN81","IN810","IN811","IN812","IN813","IN814","IN815","IN816","IN817","IN818","IN819","MID00","MID10","MID100","MID101","MID102","MID103","MID104","MID105","MID106","MID107","MID108","MID109","MID20","OUT00","OUT01","OUT010","OUT011","OUT012","OUT013","OUT014","OUT015","OUT016","OUT017","OUT018","OUT019","OUT10","OUT11","OUT110","OUT111","OUT112","OUT113","OUT114","OUT115","OUT116","OUT117","OUT118","OUT119","OUT20","OUT21","OUT210","OUT211","OUT212","OUT213","OUT214","OUT215","OUT216","OUT217","OUT218","OUT219","OUT22","OUT30","OUT31","OUT310","OUT311","OUT40","OUT41","OUT410","OUT411","OUT50","OUT51","OUT510","OUT511","OUT52","OUT60","OUT70","OUT80","OUT9","TIME","LABEL", "VAE"]
 BLOCKIDXLLS=["BASE", "BASE" ,"IN0","IN00","IN01","IN02","IN03","IN04","IN04","IN04" ,"IN04" ,"IN05","IN05","IN05" ,"IN05" ,"IN06","IN07","IN07","IN07" ,"IN07" ,"IN07" ,"IN07" ,"IN07" ,"IN07" ,"IN07" ,"IN07" ,"IN07" ,"IN07" ,"IN08","IN08","IN08" ,"IN08" ,"IN08" ,"IN08" ,"IN08" ,"IN08" ,"IN08" ,"IN08" ,"IN08" ,"IN08" ,"M00"  ,"M00"   ,"M00"   ,"M00"   ,"M00"   ,"M00"   ,"M00"   ,"M00"   ,"M00"   ,"M00"   ,"M00"   ,"M00"  ,"M00"  ,"OUT00","OUT00","OUT00" ,"OUT00" ,"OUT00" ,"OUT00" ,"OUT00" ,"OUT00" ,"OUT00" ,"OUT00" ,"OUT00" ,"OUT00" ,"OUT01","OUT01","OUT01" ,"OUT01" ,"OUT01" ,"OUT01" ,"OUT01" ,"OUT01" ,"OUT01" ,"OUT01" ,"OUT01" ,"OUT01" ,"OUT02","OUT02","OUT02" ,"OUT02" ,"OUT02" ,"OUT02" ,"OUT02" ,"OUT02" ,"OUT02" ,"OUT02" ,"OUT02" ,"OUT02" ,"OUT02","OUT03","OUT03","OUT03" ,"OUT03" ,"OUT04","OUT04","OUT04" ,"OUT04" ,"OUT05","OUT05","OUT05" ,"OUT05","OUT05","OUT06","OUT07","OUT08","OUT08", "Not Merge", "Not Merge", "VAE"]
 BLOCKIDFLUX = ["CLIP", "T5", "IN"] + ["D{:002}".format(x) for x in range(19)] + ["S{:002}".format(x) for x in range(38)] + ["OUT"] # Len: 61
+BLOCKIDANIMA = ["BASE"] + [f"B{x:02d}" for x in range(28)]
+
+ANIMA_MODEL_KEY_MARKERS = (
+    "model.diffusion_model.blocks.",
+    "model.diffusion_model.patch_embed.",
+    "model.diffusion_model.final_layer.",
+    "model.diffusion_model.t_embedder.",
+    "text_encoders.qwen3_06b.transformer.model.layers.",
+    "text_encoders.qwen3.transformer.model.layers.",
+    "text_encoders.qwen25_7b.model.layers.",
+)
 RANDMAP = [0,50,100] #alpha,beta,elements
 
 statistics = {"sum":{},"mean":{},"max":{},"min":{}}
@@ -320,12 +367,12 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
         base_alpha  = float(weights_a_t[0])    
         weights_a = [float(w) for w in weights_a_t[1].split(',')]
         caster(f"from {weights_a_t}, alpha = {base_alpha},weights_a ={weights_a}",hearm)
-        if not (len(weights_a) == 25 or len(weights_a) == 19 or len(weights_a) == 60 or len(weights_a) ==109):return f"ERROR: weights alpha value must be 20 or 26 or 61, or 110.",*NON4
+        if not (len(weights_a) == 25 or len(weights_a) == 19 or len(weights_a) == 28 or len(weights_a) == 60 or len(weights_a) ==109):return f"ERROR: weights alpha value must be 20 or 26 or 29, or 61, or 110.",*NON4
         if usebeta:
             base_beta = float(weights_b_t[0]) 
             weights_b = [float(w) for w in weights_b_t[1].split(',')]
             caster(f"from {weights_b_t}, beta = {base_beta},weights_a ={weights_b}",hearm)
-            if not(len(weights_b) == 25 or len(weights_b) == 19 or len(weights_a) == 60 or len(weights_a) == 109): return f"ERROR: weights beta value must be 20 or 26 or 61, or 110.",*NON4
+            if not(len(weights_b) == 25 or len(weights_b) == 19 or len(weights_b) == 28 or len(weights_b) == 60 or len(weights_b) == 109): return f"ERROR: weights beta value must be 20 or 26 or 29, or 61, or 110.",*NON4
 
     #model loading start 
     caster("Model loading start",hearm)
@@ -337,6 +384,7 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
     
     isxl = "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in theta_1.keys()
     isflux = any("double_block" in k for k in theta_1.keys())
+    isanima = is_anima_state_dict(theta_1)
 
     #adjust
     if fine.rstrip(",0") != "":
@@ -354,6 +402,12 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
                 print(f"beta weight converted for XL{weights_b}")
         if len(weights_a) == 19: weights_a = weights_a + [0]
         if len(weights_b) == 19: weights_b = weights_b + [0]
+
+    if isanima and useblocks:
+        if len(weights_a) != 28:
+            return "ERROR: weights alpha value must be 29 for Anima.",*NON4
+        if usebeta and len(weights_b) != 28:
+            return "ERROR: weights beta value must be 29 for Anima.",*NON4
 
     if stopmerge: return "STOPPED", *NON4
     if not (MODES[0] in mode): #Add, Twice, Triple
@@ -438,12 +492,14 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
 
         assert_inpaint(a, b, key)
 
-        block,blocks26 = blockfromkey(key,isxl,isflux)
+        block,blocks26 = blockfromkey(key,isxl,isflux,isanima)
         
         #if block == "Not Merge": continue
         skip = inex != "Off" and (ex_blocks or (ex_elems != [""])) and excluder(block,blocks26,inex,ex_blocks,ex_elems,key)
         if isflux and blocks26 in BLOCKIDFLUX:
             weight_index = BLOCKIDFLUX.index(blocks26)
+        elif isanima and blocks26 in BLOCKIDANIMA:
+            weight_index = BLOCKIDANIMA.index(blocks26)
         elif isxl and blocks26 in BLOCKIDXLL:
             weight_index = BLOCKIDXLL.index(blocks26)
         elif blocks26 in BLOCKID:
@@ -451,29 +507,29 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
         else:
             continue
         
-        weight_index_xl = BLOCKIDXLLL.index(block)
+        weight_index_xl = BLOCKIDXLLL.index(block) if block in BLOCKIDXLLL else -1
 
         if useblocks:
             if weight_index > 0:
                 if skip:weights_a_excluded[weight_index] = 0
-                current_alpha = weights_a[weight_index - 1] 
+                current_alpha = mbw_value_or_default(weights_a, weight_index - 1, base_alpha)
                 if len(weights_a) == 109:
                     if skip:weights_a_excluded[weight_index_xl] = 0
-                    current_alpha = weights_a[weight_index_xl - 1] 
-                
+                    current_alpha = mbw_value_or_default(weights_a, weight_index_xl - 1, base_alpha)
+                 
                 if usebeta:
                     if skip:weights_b_excluded[weight_index] = 0
-                    current_beta = weights_b[weight_index - 1]
+                    current_beta = mbw_value_or_default(weights_b, weight_index - 1, base_beta)
                     if len(weights_b) == 109:
                         if skip:weights_b_excluded[weight_index_xl] = 0
-                        current_alpha = weights_b[weight_index_xl - 1]
+                        current_beta = mbw_value_or_default(weights_b, weight_index_xl - 1, base_beta)
             if weight_index == 0:
                 if len(weights_a) == 109 and weight_index_xl == 1:
                     if skip:weights_a_excluded[weight_index_xl] = 0
-                    current_alpha = weights_a[weight_index_xl - 1] 
+                    current_alpha = mbw_value_or_default(weights_a, weight_index_xl - 1, base_alpha)
                 if len(weights_b) == 109 and usebeta and weight_index_xl == 1:
                     if skip:weights_b_excluded[weight_index_xl] = 0
-                    current_alpha = weights_b[weight_index_xl - 1]
+                    current_beta = mbw_value_or_default(weights_b, weight_index_xl - 1, base_beta)
                 
                 if skip:weights_a_excluded[0] = 0
                 if skip:weights_b_excluded[0] = 0
@@ -496,13 +552,14 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
 
             if MODES[1] in mode:#Add
                 caster(f"{num}, {block}, {model_a}+{current_alpha}+*({model_b}-{model_c}),{key}",hear)
+                promote = use32 or tensors_need_promotion(theta_0_a, theta_1[key])
                 if uselerp:
-                    if use32:
-                        theta_0_a = torch.lerp(theta_0_a,theta_0_a.to(torch.float32) + current_alpha * theta_1[key].to(torch.float32),1.0).to(theta_0_a.dtype)
+                    if promote:
+                        theta_0_a = torch.lerp(theta_0_a.to(torch.float32), theta_0_a.to(torch.float32) + current_alpha * theta_1[key].to(torch.float32), 1.0).to(theta_0_a.dtype)
                     else:
                         theta_0_a = torch.lerp(theta_0_a,theta_0_a + current_alpha * theta_1[key],1.0)
                 else:
-                    if use32:
+                    if promote:
                         theta_0_a = (theta_0_a.to(torch.float32) + current_alpha * theta_1[key].to(torch.float32)).to(theta_0_a.dtype)
                     else:
                         theta_0_a = (theta_0_a + current_alpha * theta_1[key])
@@ -510,18 +567,23 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
             elif MODES[2] in mode:#Triple
                 caster(f"{num}, {block}, {model_a}+{1-current_alpha-current_beta}+{model_b}*{current_alpha}+ {model_c}*{current_beta}",hear)
                 #
+                promote = use32 or tensors_need_promotion(theta_0_a, theta_1[key], theta_2[key])
                 if uselerp and current_alpha + current_beta != 0:
-                    if use32:
+                    if promote:
                         theta_0_a =lerp(theta_0_a.to(torch.float32),lerp(theta_1[key].to(torch.float32),theta_2[key].to(torch.float32),current_beta/(current_alpha + current_beta)),current_alpha + current_beta).to(theta_0_a.dtype)
                     else:
                         theta_0_a =lerp(theta_0_a,lerp(theta_1[key],theta_2[key],current_beta/(current_alpha + current_beta)),current_alpha + current_beta)
                 else:
-                    theta_0_a = (1 - current_alpha-current_beta) * theta_0_a + current_alpha * theta_1[key]+current_beta * theta_2[key] 
+                    if promote:
+                        theta_0_a = ((1 - current_alpha - current_beta) * theta_0_a.to(torch.float32) + current_alpha * theta_1[key].to(torch.float32) + current_beta * theta_2[key].to(torch.float32)).to(theta_0_a.dtype)
+                    else:
+                        theta_0_a = (1 - current_alpha-current_beta) * theta_0_a + current_alpha * theta_1[key]+current_beta * theta_2[key] 
 
             elif MODES[3] in mode:#Twice
                 caster(f"{num}, {block}, {key},{model_a} +  {1-current_alpha} + {model_b}*{current_alpha}",hear)
                 caster(f"{num}, {block}, {key}({model_a}+{model_b}) +{1-current_beta}+{model_c}*{current_beta}",hear)
-                if uselerp:
+                promote = use32 or tensors_need_promotion(theta_0_a, theta_1[key], theta_2[key])
+                if uselerp or promote:
                     theta_0_a = torch.lerp(torch.lerp(theta_0_a.to(torch.float32), theta_1[key].to(torch.float32), current_alpha), theta_2[key].to(torch.float32), current_beta).to(theta_0_a.dtype)
                 else:
                     theta_0_a = (1 - current_alpha) * theta_0_a + current_alpha * theta_1[key]
@@ -530,10 +592,11 @@ def smerge(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,mode
             else:#Weight
                 if current_alpha == 1:
                     caster(f"{num}, {block}, {key} alpha = 1,{model_a}={model_b}",hear)
-                    theta_0_a = theta_1[key]
+                    theta_0_a = theta_1[key].to(theta_0_a.dtype) if hasattr(theta_0_a, "dtype") else theta_1[key]
                 elif current_alpha !=0:
                     caster(f"{num}, {block}, {key}, {model_a}*{1-current_alpha}+{model_b}*{current_alpha}",hear)
-                    if uselerp:
+                    promote = use32 or tensors_need_promotion(theta_0_a, theta_1[key])
+                    if uselerp or promote:
                         theta_0_a = torch.lerp(theta_0_a.to(torch.float32), theta_1[key].to(torch.float32), current_alpha).to(theta_0_a.dtype)
                     else:
                         theta_0_a = (1 - current_alpha) * theta_0_a + current_alpha * theta_1[key]
@@ -913,8 +976,9 @@ def multithread_smoothadd(key_and_alpha, theta_0, theta_1, threads, tasks_per_th
             caster(f"model A[{key}] +  {key_and_alpha[key]} + * (model B - model C)[{key}]", hear)
             filtered_diff = scipy.ndimage.median_filter(theta_1[key].to(torch.float32).cpu().numpy(), size=3)
             filtered_diff = scipy.ndimage.gaussian_filter(filtered_diff, sigma=1)
+            filtered_tensor = torch.tensor(filtered_diff, device=theta_0[key].device, dtype=theta_0[key].dtype)
             with lock_theta_1:
-                theta_1[key] = torch.tensor(filtered_diff)
+                theta_1[key] = filtered_tensor
             with lock_theta_0:
                 theta_0[key] = theta_0[key] + key_and_alpha[key] * theta_1[key]
 
@@ -993,6 +1057,7 @@ def load_model_weights_m(model,abc,cachetarget,device):
     else:
         print(f"Loading weights [{sd_model_name}] from file")
         state_dict = forkforker(checkpoint_info.filename,device)
+        state_dict = normalize_anima_merge_state_dict(state_dict)
         if orig_cache >= abc:
             modelcache[checkpoint_info] = state_dict
             modelcache[checkpoint_info] = {k: v.to("cpu") for k, v in modelcache[checkpoint_info].items()}
@@ -1093,12 +1158,12 @@ def overwrite_last_weights(weights_a, weights_b):
     if len(reader) <= 1:
         raise ValueError("No data rows to update in mergehistory.csv.")
 
-    # 最後のデータ行に対して weights を上書き
+    # overwrite weights for the last data row
     last_row_index = len(reader) - 1
     reader[last_row_index][3] = str(weights_a)  # "weights alpha"
     reader[last_row_index][4] = str(weights_b)  # "weights beta"
 
-    # 上書き保存
+    # save (overwrite)
     with open(filepath, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerows(reader)
@@ -1402,8 +1467,9 @@ def simggen(s_prompt,s_nprompt,s_steps,s_sampler,s_cfg,s_seed,s_w,s_h,s_batch_si
 
         sd_models.reload_model_weights = orig_reload_model_weights
     elif neo:
-        with patch.object(processing.sd_models, 'forge_model_reload', reload_model_weights), patch.object(processing, 'forge_model_reload', reload_model_weights):
-            processed: Processed = processing.process_images(p)
+        memory_management.unload_all_models()
+        memory_management.soft_empty_cache()
+        processed: Processed = processing.process_images(p)
     else:
         processed:Processed = processing.process_images(p)
 
@@ -1456,7 +1522,37 @@ def blocker(blocks,blockids):
     return output
 
 
-def blockfromkey(key,isxl,isflux=False):
+def blockfromkey(key,isxl,isflux=False,isanima=False):
+    if isanima:
+        if "first_stage_model" in key or key.startswith("vae."):
+            return "VAE", "BASE"
+        if ".model.layers." in key:
+            match = re.search(r"\.model\.layers\.(\d+)\.", key)
+            if match:
+                block = f"B{int(match.group(1)):02d}"
+                return block, block
+            return "BASE", "BASE"
+        if "model.diffusion_model.blocks." in key:
+            match = re.search(r"model\.diffusion_model\.blocks\.(\d+)\.", key)
+            if match:
+                block = f"B{int(match.group(1)):02d}"
+                return block, block
+            return "BASE", "BASE"
+        if any(token in key for token in (
+            "model.diffusion_model.patch_embed.",
+            "model.diffusion_model.final_layer.",
+            "model.diffusion_model.t_embedder.",
+            "model.diffusion_model.x_embedder.",
+            "model.diffusion_model.y_embedder.",
+            "model.diffusion_model.context_processor.",
+            "model.diffusion_model.pos_embed",
+            "model.diffusion_model.rope",
+            "text_encoders.",
+            "llm_adapter.",
+        )):
+            return "BASE", "BASE"
+        return "Not Merge", "Not Merge"
+
     if not isxl and not isflux:
         re_inp = re.compile(r'\.input_blocks\.(\d+)\.')  # 12
         re_mid = re.compile(r'\.middle_block\.(\d+)\.')  # 1
@@ -1703,15 +1799,33 @@ def casterr(*args,hear=hear):
 ################################################
 ##### model_loader
 def model_loader(checkpoint_info, state_dict,metadata, currentmodel): 
+    global merged_state_dict_override
     if ui_version >= 150: checkpoint_info = fake_checkpoint_info(checkpoint_info,metadata,currentmodel)
 
     if neo:
+        merged_state_dict_override = state_dict
         sd_models.model_data.__init__()
+        if hasattr(sd_models.model_data, "forge_loading_parameters"):
+            sd_models.model_data.forge_loading_parameters = dict(
+                checkpoint_info=checkpoint_info,
+                additional_modules=shared.opts.forge_additional_modules,
+                unet_storage_dtype=fsd.dynamic_args.get('forge_unet_storage_dtype', None) if 'fsd' in globals() else None,
+                state_dict_override_id=id(state_dict),
+            )
         load_forge_model(state_dict,checkpoint_info)
     elif not forge:
         sd_models.model_data.__init__()
         sd_models.load_model(checkpoint_info, already_loaded_state_dict=state_dict)
     else:
+        merged_state_dict_override = state_dict
+        from modules_forge.main_entry import forge_unet_storage_dtype_options
+        unet_storage_dtype, _ = forge_unet_storage_dtype_options.get(shared.opts.forge_unet_storage_dtype, (None, False))
+        fsd.model_data.forge_loading_parameters = dict(
+            checkpoint_info=checkpoint_info,
+            additional_modules=shared.opts.forge_additional_modules,
+            unet_storage_dtype=unet_storage_dtype,
+            state_dict_override_id=id(state_dict),
+        )
         memory_management.free_memory(1e30,torch.device("cpu"))
         load_forge_model(state_dict,checkpoint_info)
     print("SuperMerger: Merged Model Loaded.")
@@ -1729,19 +1843,27 @@ def reload_model_weights(info=None):
     return sd_models.model_data.sd_model, False
 
 orig_reload_model_weights = None
+orig_forge_model_reload = None
 
 
 if forge or neo:
     from modules import sd_models as fsd
+    from modules import processing as forge_processing
     from modules.timer import Timer
     from backend import loader as fld
     import huggingface_guess
     from modules_forge.main_entry import refresh_model_loading_parameters
 
+def forge_params_hash(params):
+    return str(params)
+
+def forge_params_for_log(params):
+    return params
+
 @torch.inference_mode()
 def load_forge_model(state_dict,checkpoint_info = None):
-    current_hash = str(fsd.model_data.forge_loading_parameters)
-    print('Loading Model: ' + str(fsd.model_data.forge_loading_parameters))
+    current_hash = forge_params_hash(fsd.model_data.forge_loading_parameters)
+    print('Loading Model: ' + str(forge_params_for_log(fsd.model_data.forge_loading_parameters)))
 
     timer = Timer()
 
@@ -1786,11 +1908,37 @@ def load_forge_model(state_dict,checkpoint_info = None):
 
     fsd.model_data.forge_hash = current_hash
 
+    state_dict_override_id = fsd.model_data.forge_loading_parameters.get("state_dict_override_id")
     fsd.model_data.forge_loading_parameters = dict(
         checkpoint_info=checkpoint_info,
         additional_modules=shared.opts.forge_additional_modules,
         unet_storage_dtype=fsd.dynamic_args['forge_unet_storage_dtype']
     )
+    if state_dict_override_id is not None:
+        fsd.model_data.forge_loading_parameters["state_dict_override_id"] = state_dict_override_id
+
+def merged_forge_model_reload():
+    params = fsd.model_data.forge_loading_parameters
+    current_hash = forge_params_hash(params)
+
+    if fsd.model_data.forge_hash == current_hash:
+        return fsd.model_data.sd_model, False
+
+    if params.get("state_dict_override_id") is None or merged_state_dict_override is None:
+        return orig_forge_model_reload()
+
+    checkpoint_info = params.get("checkpoint_info")
+    if checkpoint_info is None:
+        raise ValueError("Failed to find available model...")
+
+    load_forge_model(merged_state_dict_override, checkpoint_info)
+    return fsd.model_data.sd_model, True
+
+
+if forge or neo:
+    orig_forge_model_reload = fsd.forge_model_reload
+    fsd.forge_model_reload = merged_forge_model_reload
+    forge_processing.forge_model_reload = merged_forge_model_reload
 
 COMP_NAME_AND_PREFIX = {"transformer":PREFIX_M, "text_encoder": "clip_l" , "text_encoder2": "t5xxl", "vae": "vae."}
 
@@ -1803,16 +1951,16 @@ def forge_loader(state_dict, additional_state_dicts):
     
     repo_name = estimated_config.huggingface_repo
 
-    local_path = os.path.join(fld.dir_path, 'huggingface', repo_name)
-    config: dict = fld.DiffusionPipeline.load_config(local_path)
+    from diffusers import DiffusionPipeline
+
+    local_path = os.path.join(fld.HF, repo_name)
+    config: dict = DiffusionPipeline.load_config(local_path)
     huggingface_components = {}
     for component_name, v in config.items():
         if isinstance(v, list) and len(v) == 2:
             lib_name, cls_name = v
-            component_sd = state_dicts.get(component_name, None)
+            component_sd = state_dicts.pop(component_name, None)
             component = fld.load_huggingface_component(estimated_config, component_name, lib_name, cls_name, local_path, component_sd)
-            if component_sd is not None:
-                del state_dicts[component_name]
             if component is not None:
                 huggingface_components[component_name] = component
 
@@ -1828,9 +1976,9 @@ def split_state_dict(sd, additional_state_dicts: list = None):
     guess = huggingface_guess.guess(sd)
 
     if isinstance(additional_state_dicts, list):
-        for asd in additional_state_dicts:
-            asd = load_torch_file(asd)
-            sd = fld.replace_state_dict(sd, asd, guess)
+        for asd_path in additional_state_dicts:
+            asd = load_torch_file(asd_path)
+            sd = fld.replace_state_dict(sd, asd, guess, asd_path)
 
     guess.clip_target = guess.clip_target(sd)
 
@@ -1845,6 +1993,12 @@ def split_state_dict(sd, additional_state_dicts: list = None):
         state_dict[v] = fld.try_filter_state_dict(sd, [k + '.'])
 
     state_dict['ignore'] = sd
+    if "Anima" in getattr(guess, "huggingface_repo", ""):
+        transformer_sd = state_dict.get("transformer", {})
+        text_encoder_sd = state_dict.get("text_encoder", {})
+        for key in list(transformer_sd.keys()):
+            if key.startswith("llm_adapter."):
+                text_encoder_sd[key] = transformer_sd.pop(key)
     print_dict = {k: len(v) for k, v in state_dict.items()}
     print(f'StateDict Keys: {print_dict}')
 
@@ -1870,17 +2024,37 @@ def prefixer(t, revert = False):
     gc.collect()
     return need_revert
 
-def forge_save(filename):
+def forge_save(filename, save_sets):
     print("Saveing Model...")
     from modules.paths import models_path
+    from backend.utils import get_state_dict_after_quant
+    import safetensors.torch
     if ".safetensors" not in filename:
         filename = filename +".safetensors"
     long_filename = os.path.join(models_path, 'Stable-diffusion', filename)
     os.makedirs(os.path.dirname(long_filename), exist_ok=True)
     from modules import shared
-    p = shared.sd_model.save_checkpoint(long_filename)
-    print(f'Saved checkpoint at: {p}')
-    return f'Saved checkpoint at: {p}'
+
+    if os.path.isfile(long_filename) and "overwrite" not in save_sets:
+        print(f"Output file ({long_filename}) existed and was not saved]")
+        return f"Output file ({long_filename}) existed and was not saved]"
+
+    sd = {}
+    sd.update(get_state_dict_after_quant(shared.sd_model.forge_objects.unet.model.diffusion_model, prefix="model.diffusion_model."))
+
+    clip_sd = get_state_dict_after_quant(shared.sd_model.forge_objects.clip.cond_stage_model, prefix="text_encoders.")
+    llm_adapter_keys = [key for key in clip_sd.keys() if ".llm_adapter." in key]
+    for key in llm_adapter_keys:
+        _, _, suffix = key.partition(".llm_adapter.")
+        if suffix:
+            sd[f"model.diffusion_model.llm_adapter.{suffix}"] = clip_sd.pop(key)
+
+    sd.update(clip_sd)
+    sd.update(get_state_dict_after_quant(shared.sd_model.forge_objects.vae.first_stage_model, prefix="vae."))
+
+    safetensors.torch.save_file(sd, long_filename)
+    print(f'Saved checkpoint at: {long_filename}')
+    return f'Saved checkpoint at: {long_filename}'
 
 ###############################################################
 ######## QLoRA   
@@ -1892,6 +2066,10 @@ def qdtyper(sd):
     for key in sd:
         if hasattr(sd[key],"dtype"):
             return sd[key].dtype
+
+def tensors_need_promotion(*tensors):
+    dtypes = {tensor.dtype for tensor in tensors if isinstance(tensor, torch.Tensor)}
+    return len(dtypes) > 1
 
 def to_qdtype(sd_1, sd_2, qd_1, qd_2, device, m1, m2):
     if qd_1 in QTYPES and qd_2 in QTYPES:
@@ -1906,6 +2084,11 @@ def to_qdtype(sd_1, sd_2, qd_1, qd_2, device, m1, m2):
     if qd_2 in QTYPES: 
         print(f"Changing dtype of {m2} to {qd_1 if t2 is None else t2}")
         q_dequantize(sd_2,qd_2,device,qd_1)
+    elif qd_1 != qd_2 and qd_1 is not None:
+        print(f"Changing dtype of {m2} to {qd_1}")
+        for key in sd_2:
+            if isinstance(sd_2[key], torch.Tensor):
+                sd_2[key] = sd_2[key].to(qd_1)
 
     devices.torch_gc()
     

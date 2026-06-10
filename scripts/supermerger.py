@@ -25,7 +25,7 @@ from modules.ui import create_output_panel, create_refresh_button
 import scripts.mergers.components as components
 import csv
 import scripts.mergers.pluslora as pluslora
-from scripts.mergers.mergers import (TYPESEG,EXCLUDE_CHOICES, freezemtime, rwmergelog, blockfromkey, clearcache, getcachelist)
+from scripts.mergers.mergers import (TYPESEG,EXCLUDE_CHOICES, freezemtime, rwmergelog, blockfromkey, clearcache, getcachelist, BLOCKIDANIMA, is_anima_state_dict)
 from scripts.mergers.xyplot import freezetime, nulister
 from scripts.mergers.model_util import filenamecutter, savemodel
 
@@ -40,6 +40,9 @@ path_root = basedir()
 xyzpath = os.path.join(path_root,"xyzpresets.json")
 
 CALCMODES  = ["normal", "cosineA", "cosineB","trainDifference","smoothAdd","smoothAdd MT","extract","tensor","tensor2","self","plus random"]
+
+def sorted_checkpoint_tiles():
+    return sorted(sd_models.checkpoint_tiles(), key=lambda name: name.casefold())
 
 try:
     from backend.utils import load_torch_file
@@ -96,14 +99,14 @@ def on_ui_tabs():
                         mclearcache= gr.Button(value="Clear Cache",elem_classes=["compact_button"],variant='primary')
 
                     with gr.Row(variant="compact"):
-                        model_a = gr.Dropdown(sd_models.checkpoint_tiles(),elem_id="model_converter_model_name",label="Model A",interactive=True)
-                        create_refresh_button(model_a, sd_models.list_models,lambda: {"choices": sd_models.checkpoint_tiles()},"refresh_checkpoint_Z")
+                        model_a = gr.Dropdown(sorted_checkpoint_tiles(),elem_id="model_converter_model_name",label="Model A",interactive=True)
+                        create_refresh_button(model_a, sd_models.list_models,lambda: {"choices": sorted_checkpoint_tiles()},"refresh_checkpoint_Z")
 
-                        model_b = gr.Dropdown(sd_models.checkpoint_tiles(),elem_id="model_converter_model_name",label="Model B",interactive=True)
-                        create_refresh_button(model_b, sd_models.list_models,lambda: {"choices": sd_models.checkpoint_tiles()},"refresh_checkpoint_Z")
+                        model_b = gr.Dropdown(sorted_checkpoint_tiles(),elem_id="model_converter_model_name",label="Model B",interactive=True)
+                        create_refresh_button(model_b, sd_models.list_models,lambda: {"choices": sorted_checkpoint_tiles()},"refresh_checkpoint_Z")
 
-                        model_c = gr.Dropdown(sd_models.checkpoint_tiles(),elem_id="model_converter_model_name",label="Model C",interactive=True)
-                        create_refresh_button(model_c, sd_models.list_models,lambda: {"choices": sd_models.checkpoint_tiles()},"refresh_checkpoint_Z")
+                        model_c = gr.Dropdown(sorted_checkpoint_tiles(),elem_id="model_converter_model_name",label="Model C",interactive=True)
+                        create_refresh_button(model_c, sd_models.list_models,lambda: {"choices": sorted_checkpoint_tiles()},"refresh_checkpoint_Z")
 
                     mode = gr.Radio(label = "Merge Mode",choices = ["Weight sum", "Add difference", "Triple sum", "sum Twice"], value="Weight sum", info="A*(1-alpha)+B*alpha")
                     calcmode = gr.Radio(label = "Calculation Mode",choices = CALCMODES, value = "normal") 
@@ -144,7 +147,7 @@ def on_ui_tabs():
 
                     with gr.Accordion("Merging Block Weights", open=False):
                         with gr.Row():
-                            isxl = gr.Radio(label = "Block Type",choices = ["1.X or 2.X", "XL"], value = "1.X or 2.X", type="index")
+                            isxl = gr.Radio(label = "Block Type",choices = ["1.X or 2.X", "XL", "Anima"], value = "1.X or 2.X", type="value")
 
                         with gr.Tab("Weights Setting"):
                             with gr.Group(), gr.Tabs():
@@ -231,6 +234,15 @@ def on_ui_tabs():
                                     mi00 = gr.Slider(label="M00", minimum=0, maximum=1, step=0.0001, value=0.5)
                                 with gr.Column(scale=1, min_width=100):
                                     gr.Slider(visible=False)
+                            with gr.Row():
+                                with gr.Column(scale=1, min_width=100):
+                                    gr.Slider(visible=False)
+                                with gr.Column(scale=2, min_width=200):
+                                    anima25 = gr.Slider(label="B25", minimum=0, maximum=1, step=0.0001, value=0.5, visible=False)
+                                    anima26 = gr.Slider(label="B26", minimum=0, maximum=1, step=0.0001, value=0.5, visible=False)
+                                    anima27 = gr.Slider(label="B27", minimum=0, maximum=1, step=0.0001, value=0.5, visible=False)
+                                with gr.Column(scale=1, min_width=100):
+                                    gr.Slider(visible=False)
 
                         with gr.Tab("Weights Presets"):
                             with gr.Row():
@@ -283,7 +295,7 @@ def on_ui_tabs():
                             calcmodes = gr.CheckboxGroup(label = "calcmode",choices=CALCMODES,type="value",interactive=True)
                         with gr.Row(visible = False) as row_checkpoints:
                             checkpoints = gr.CheckboxGroup(label = "checkpoints",choices=[x.model_name for x in sd_models.checkpoints_list.values()],type="value",interactive=True)
-                            create_refresh_button(checkpoints, sd_models.list_models, lambda: {"choices": [x.model_name for x in sd_models.checkpoints_list.values()]}, "refresh_checkpoint_xyz")
+                            create_refresh_button(checkpoints, sd_models.list_models, lambda: {"choices": sorted([x.model_name for x in sd_models.checkpoints_list.values()], key=lambda name: name.casefold())}, "refresh_checkpoint_xyz")
                         with gr.Row(visible = False) as row_blocks:
                             gr.HTML(value="<p>BASE,IN00,IN01,IN02,IN03,IN04,IN05,IN06,IN07,IN08,IN09,IN10,IN11<br>,M00,OUT00,OUT01,OUT02,OUT03,OUT04,OUT05,OUT06,OUT07,OUT08,OUT09,OUT10,OUT11,Adjust,VAE,print</p>")
 
@@ -430,10 +442,10 @@ def on_ui_tabs():
         with gr.Tab("Analysis", elem_id="tab_analysis"):
             with gr.Tab("Models"):
                 with gr.Row():
-                    an_model_a = gr.Dropdown(sd_models.checkpoint_tiles(),elem_id="model_converter_model_name",label="Checkpoint A",interactive=True)
-                    create_refresh_button(an_model_a, sd_models.list_models,lambda: {"choices": sd_models.checkpoint_tiles()},"refresh_checkpoint_Z") 
-                    an_model_b = gr.Dropdown(sd_models.checkpoint_tiles(),elem_id="model_converter_model_name",label="Checkpoint B",interactive=True)
-                    create_refresh_button(an_model_b, sd_models.list_models,lambda: {"choices": sd_models.checkpoint_tiles()},"refresh_checkpoint_Z") 
+                    an_model_a = gr.Dropdown(sorted_checkpoint_tiles(),elem_id="model_converter_model_name",label="Checkpoint A",interactive=True)
+                    create_refresh_button(an_model_a, sd_models.list_models,lambda: {"choices": sorted_checkpoint_tiles()},"refresh_checkpoint_Z") 
+                    an_model_b = gr.Dropdown(sorted_checkpoint_tiles(),elem_id="model_converter_model_name",label="Checkpoint B",interactive=True)
+                    create_refresh_button(an_model_b, sd_models.list_models,lambda: {"choices": sorted_checkpoint_tiles()},"refresh_checkpoint_Z") 
                 with gr.Row():
                     an_mode  = gr.Radio(label = "Analysis Mode",choices = ["ASimilarity","Block","Element","Both"], value = "ASimilarity",type  = "value") 
                     an_calc  = gr.Radio(label = "Block method",choices = ["Mean","Min","attn2"], value = "Mean",type  = "value") 
@@ -475,8 +487,8 @@ def on_ui_tabs():
 
         with gr.Tab("Elements", elem_id="tab_deep"):
                 with gr.Row():
-                    smd_model_a = gr.Dropdown(sd_models.checkpoint_tiles(),elem_id="model_converter_model_name",label="Checkpoint",interactive=True)
-                    create_refresh_button(smd_model_a, sd_models.list_models,lambda: {"choices": sd_models.checkpoint_tiles()},"refresh_checkpoint_Z")    
+                    smd_model_a = gr.Dropdown(sorted_checkpoint_tiles(),elem_id="model_converter_model_name",label="Checkpoint",interactive=True)
+                    create_refresh_button(smd_model_a, sd_models.list_models,lambda: {"choices": sorted_checkpoint_tiles()},"refresh_checkpoint_Z")    
                     smd_loadkeys = gr.Button(value="load keys",variant='primary')
                 with gr.Row():
                     smd_lora = gr.Dropdown(list(lora.available_loras.keys()),elem_id="model_converter_model_name",label="LoRA",interactive=True)
@@ -488,13 +500,13 @@ def on_ui_tabs():
 
         with gr.Tab("Metadata", elem_id="tab_metadata"):
                 with gr.Row():
-                    meta_model_a = gr.Dropdown(sd_models.checkpoint_tiles(),elem_id="model_converter_model_name",label="read metadata",interactive=True)
-                    create_refresh_button(meta_model_a, sd_models.list_models,lambda: {"choices": sd_models.checkpoint_tiles()},"refresh_checkpoint_Z")    
+                    meta_model_a = gr.Dropdown(sorted_checkpoint_tiles(),elem_id="model_converter_model_name",label="read metadata",interactive=True)
+                    create_refresh_button(meta_model_a, sd_models.list_models,lambda: {"choices": sorted_checkpoint_tiles()},"refresh_checkpoint_Z")    
                     smd_loadmetadata = gr.Button(value="load keys",variant='primary')
                 with gr.Row():
                     metadata = gr.TextArea()
 
-        # 指定IDから比率を抽出して解析
+        # Extract and analyze ratios from the given IDs
         def analyze_ids(id_text):
             ids = [int(x.strip()) for x in id_text.split(",") if x.strip().isdigit()]
             wlen = 0
@@ -528,42 +540,42 @@ def on_ui_tabs():
                 fig, ax = plt.subplots(figsize=(14, 5))
                 x = np.arange(len(mean_ratios))
 
-                # ±1σ の帯を棒で描く
+                # Draw the +/-1 sigma band as bars
                 for xi, mu, sigma in zip(x, mean_ratios, std_ratios):
                     bottom = mu - sigma
                     height = sigma * 2
                     ax.bar(xi, height, bottom=bottom, width=0.8, color='yellow', alpha=0.7, edgecolor='black')
-                    ax.plot(xi, mu, 'ko', markersize=3)  # 平均点
+                    ax.plot(xi, mu, 'ko', markersize=3)  # mean point
 
-                ax.set_title("マージ比率の平均 ± 標準偏差（±1σ）")
-                ax.set_xlabel("層名")
-                ax.set_ylabel("alpha 値")
+                ax.set_title("Merge ratio mean +/- standard deviation (+/-1 sigma)")
+                ax.set_xlabel("Layer name")
+                ax.set_ylabel("alpha value")
 
-                # 層名を表示（多いので回転あり）
+                # Show layer names (rotated, since there are many)
                 ax.set_xticks(x)
                 ax.set_xticklabels(layer_names, rotation=90, fontsize=6)
 
                 plt.tight_layout()
                 return fig
 
-            # 図を作成
+            # Create the figure
             if label is None:
                 label = [""] * wlen
             fig = plot_bar_with_std_band(mean_ratios, std_ratios, label)
 
-            # カンマ区切りテキスト
+            # Comma-separated text
             mean_str = ",".join(f"{v:.3f}" for v in mean_ratios)
             std_str = ",".join(f"{v:.3f}" for v in std_ratios)
             std_str2 = ",".join(f"{v*2:.3f}" for v in std_ratios)
             std_str3 = ",".join(f"{v*3:.3f}" for v in std_ratios)
 
-            # 結果テキスト
+            # Result text
             result_text = (
-                f"有効なID数: {len(ids)}\n"
-                f"\n平均α:\n{mean_str}\n"
-                f"\n標準偏差:\n{std_str}"
-                f"\n標準偏差x2:\n{std_str2}"
-                f"\n標準偏差x3:\n{std_str3}"
+                f"Number of valid IDs: {len(ids)}\n"
+                f"\nMean alpha:\n{mean_str}\n"
+                f"\nStandard deviation:\n{std_str}"
+                f"\nStandard deviation x2:\n{std_str2}"
+                f"\nStandard deviation x3:\n{std_str3}"
             )
 
             return result_text, fig
@@ -571,17 +583,16 @@ def on_ui_tabs():
         # Gradio UI
         with gr.Tab("Weight Analysis", elem_id="tab_w_ana"):
             with gr.Blocks() as demo:
-                gr.Markdown("## 🔍 Stable Diffusion XL - Merge Ratio Analysis Tool（マージ比率解析ツール）")
+                gr.Markdown("## 🔍 Stable Diffusion XL - Merge Ratio Analysis Tool")
                 gr.Markdown(
                     """
                     Enter one or more Merge IDs separated by commas to analyze and compare their weight ratios.  
-                    カンマ区切りで複数のマージIDを入力すると、それぞれの比率を比較して解析できます。
                     """
                 )
-                id_input = gr.Textbox(label="Target Merge ID(s)（対象のマージID）", placeholder="例: merge_001, merge_002")
-                analyze_btn = gr.Button("Analyze（解析する）")
-                result_text = gr.Textbox(label="Result Summary（結果概要）")
-                graph_output = gr.Plot(label="Ratio Graph（比率グラフ）")
+                id_input = gr.Textbox(label="Target Merge ID(s)", placeholder="e.g. merge_001, merge_002")
+                analyze_btn = gr.Button("Analyze")
+                result_text = gr.Textbox(label="Result Summary")
+                graph_output = gr.Plot(label="Ratio Graph")
 
                 analyze_btn.click(
                     analyze_ids,
@@ -591,7 +602,7 @@ def on_ui_tabs():
 
 
         with gr.Tab("IDs from images", elem_id="ids"):
-            # Gradioインターフェースの作成
+            # Build the Gradio interface
             with gr.Blocks() as demo:
                 gr.Markdown("# Merge IDs from images, drag and drop multiple images")
                 
@@ -599,12 +610,12 @@ def on_ui_tabs():
                     image_input = gr.File(
                         file_count="multiple", 
                         file_types=["png"], 
-                        label="PNGファイルをここにドラッグ＆ドロップ"
+                        label="Drag & drop PNG files here"
                     )
                     
-                output_textbox = gr.Textbox(label="抽出されたPNG Info（配列形式）")
+                output_textbox = gr.Textbox(label="Extracted PNG Info (array format)")
 
-                # ファイルがアップロードされたら関数を実行
+                # Run the function when files are uploaded
 
         smd_loadmetadata.click(
             fn=loadmetadata,
@@ -671,7 +682,7 @@ def on_ui_tabs():
         blockids.change(fn=lambda x:" ".join(x),inputs=[blockids],outputs=[inputer])
         calcmodes.change(fn=lambda x:",".join(x),inputs=[calcmodes],outputs=[inputer])
 
-        menbers = [base,in00,in01,in02,in03,in04,in05,in06,in07,in08,in09,in10,in11,mi00,ou00,ou01,ou02,ou03,ou04,ou05,ou06,ou07,ou08,ou09,ou10,ou11]
+        menbers = [base,in00,in01,in02,in03,in04,in05,in06,in07,in08,in09,in10,in11,mi00,ou00,ou01,ou02,ou03,ou04,ou05,ou06,ou07,ou08,ou09,ou10,ou11,anima25,anima26,anima27]
         menbers_plus = menbers + [resetval]
 
         lower.change(fn = lambda x: [gr.update(minimum = x) for i in range(len(menbers_plus))],inputs = [lower],outputs = menbers_plus)
@@ -696,98 +707,40 @@ def on_ui_tabs():
             msg = savemodel(None,None,custom_name,save_settings)
             return gr.update(value=msg)
 
-        def addblockweights(val, blockopt, *blocks):
+        def addblockweights(val, blockopt, block_type, *blocks):
             if val == "none":
                 val = 0
 
             value = float(val)
+            vals = list(blocks[:MAX_UI_BLOCKS])
+            for idx in ui_helper_targets(blockopt, block_type):
+                vals[idx] = vals[idx] + value
+            return setblockweights(vals, blockopt, block_type)
 
-            if "BASE" in blockopt:
-                vals = [blocks[0] + value]
-            else:
-                vals = [blocks[0]]
-
-            if "INP*" in blockopt:
-                inp = [blocks[i + 1] + value for i in range(12)]
-            else:
-                inp = [blocks[i + 1] for i in range(12)]
-            vals = vals + inp
-
-            if "MID" in blockopt:
-                mid = [blocks[13] + value]
-            else:
-                mid = [blocks[13]]
-            vals = vals + mid
-
-            if "OUT*" in blockopt:
-                out = [blocks[i + 14] + value for i in range(12)]
-            else:
-                out = [blocks[i + 14] for i in range(12)]
-            vals = vals + out
-
-            return setblockweights(vals, blockopt)
-
-        def mulblockweights(val, blockopt, *blocks):
+        def mulblockweights(val, blockopt, block_type, *blocks):
             if val == "none":
                 val = 0
 
             value = float(val)
+            vals = list(blocks[:MAX_UI_BLOCKS])
+            for idx in ui_helper_targets(blockopt, block_type):
+                vals[idx] = vals[idx] * value
+            return setblockweights(vals, blockopt, block_type)
 
-            if "BASE" in blockopt:
-                vals = [blocks[0] * value]
-            else:
-                vals = [blocks[0]]
-
-            if "INP*" in blockopt:
-                inp = [blocks[i + 1] * value for i in range(12)]
-            else:
-                inp = [blocks[i + 1] for i in range(12)]
-            vals = vals + inp
-
-            if "MID" in blockopt:
-                mid = [blocks[13] * value]
-            else:
-                mid = [blocks[13]]
-            vals = vals + mid
-
-            if "OUT*" in blockopt:
-                out = [blocks[i + 14] * value for i in range(12)]
-            else:
-                out = [blocks[i + 14] for i in range(12)]
-            vals = vals + out
-
-            return setblockweights(vals, blockopt)
-
-        def resetblockweights(val, blockopt):
+        def resetblockweights(val, blockopt, block_type):
             if val == "none":
                 val = 0
-            vals = [float(val)] * 26
-            return setblockweights(vals, blockopt)
+            vals = [float(val)] * MAX_UI_BLOCKS
+            return setblockweights(vals, blockopt, block_type)
 
-        def setblockweights(vals, blockopt):
-            if "BASE" in blockopt:
-                ret = [gr.update(value = vals[0])]
-            else:
-                ret = [gr.update()]
-
-            if "INP*" in blockopt:
-                inp = [gr.update(value = vals[i + 1]) for i in range(12)]
-            else:
-                inp = [gr.update() for _ in range(12)]
-            ret = ret + inp
-
-            if "MID" in blockopt:
-                mid = [gr.update(value = vals[13])]
-            else:
-                mid = [gr.update()]
-            ret = ret + mid
-
-            if "OUT*" in blockopt:
-                out = [gr.update(value = vals[i + 14]) for i in range(12)]
-            else:
-                out = [gr.update() for _ in range(12)]
-            ret = ret + out
-
+        def setblockweights(vals, blockopt, block_type):
+            targets = ui_helper_targets(blockopt, block_type)
+            ret = []
+            for idx in range(MAX_UI_BLOCKS):
+                if idx in targets:
+                    ret.append(gr.update(value=vals[idx]))
+                else:
+                    ret.append(gr.update())
             return ret
 
         def resetvalopt(opt):
@@ -833,14 +786,14 @@ def on_ui_tabs():
         savecurrent.click(fn=save_current_merge, inputs=[custom_name, save_sets], outputs=[components.submit_result])
 
         resetopt.change(fn=resetvalopt,inputs=[resetopt],outputs=[resetval])
-        resetweight.click(fn=resetblockweights,inputs=[resetval,resetblockopt],outputs=menbers)
-        addweight.click(fn=addblockweights,inputs=[resetval,resetblockopt,*menbers],outputs=menbers)
-        mulweight.click(fn=mulblockweights,inputs=[resetval,resetblockopt,*menbers],outputs=menbers)
+        resetweight.click(fn=resetblockweights,inputs=[resetval,resetblockopt,isxl],outputs=menbers)
+        addweight.click(fn=addblockweights,inputs=[resetval,resetblockopt,isxl,*menbers],outputs=menbers)
+        mulweight.click(fn=mulblockweights,inputs=[resetval,resetblockopt,isxl,*menbers],outputs=menbers)
 
         readalpha.click(fn=text2slider,inputs=[weights_a,isxl],outputs=menbers)
         readbeta.click(fn=text2slider,inputs=[weights_b,isxl],outputs=menbers)
 
-        dd_preset_weight.change(fn=on_change_dd_preset_weight,inputs=[wpresets, dd_preset_weight],outputs=menbers)
+        dd_preset_weight.change(fn=on_change_dd_preset_weight,inputs=[wpresets, dd_preset_weight, isxl],outputs=menbers)
         dd_preset_weight_r.change(fn=on_change_dd_preset_weight_r,inputs=[wpresets, dd_preset_weight_r,luckab],outputs=[weights_a,weights_b])
 
         def refresh_presets(presets,rand,ab = ""):
@@ -850,13 +803,15 @@ def on_ui_tabs():
         preset_refresh.click(fn=refresh_presets,inputs=[wpresets,components.dfalse],outputs=[dd_preset_weight])
         preset_refresh_r.click(fn=refresh_presets,inputs=[wpresets,components.dtrue],outputs=[weights_a,weights_b])
 
-        def changexl(isxl):
-            out = [True] * 26
-            if isxl:
-                for i,id in enumerate(BLOCKID[:-1]):
-                    if id not in BLOCKIDXLL[:-1]:
-                        out[i] = False
-            return [gr.update(visible = x) for x in out]
+        def changexl(block_type):
+            labels = ui_block_labels(block_type)
+            out = []
+            for i in range(MAX_UI_BLOCKS):
+                if i < len(labels):
+                    out.append(gr.update(visible=True, label=labels[i]))
+                else:
+                    out.append(gr.update(visible=False))
+            return out
 
         isxl.change(fn=changexl,inputs=[isxl], outputs=menbers)
 
@@ -949,18 +904,18 @@ def on_ui_tabs():
                     info_text = img.info.get('parameters', '')
 
                     if info_text:
-                        # カンマで分割し、前後の空白を削除
+                        # Split on commas and strip surrounding whitespace
                         id = [item.strip() for item in info_text.split(' ID ')][-1]
                         id = [item.strip() for item in id.split(',')][0]
                         if id not in all_ids:
                             all_ids.append(id)
                     else:
-                        # 'parameters'キーがない場合や、情報が空の場合
-                        all_ids.append(["[この画像には指定のPNG Infoがありませんでした]"])
+                        # When there is no 'parameters' key or the info is empty
+                        all_ids.append(["[This image did not contain the expected PNG Info]"])
 
                 except Exception as e:
-                    # ファイルがPNGでない場合などのエラー処理
-                    all_ids.append([f"[エラー: {e}]"])
+                    # Error handling for non-PNG files etc.
+                    all_ids.append([f"[Error: {e}]"])
                     
             return ",".join(all_ids), None
         
@@ -1121,41 +1076,32 @@ def get_xyzpreset_keylist():
     keys_list = list(get_xyzpreset_data())
     return sorted(keys_list)
 
-def text2slider(text, isxl=False):
+def text2slider(text, block_type="1.X or 2.X"):
     vals = [t.strip() for t in text.split(",")]
     vals = [0 if v in "RUX" else v for v in vals]
+    labels = ui_block_labels(block_type)
+    ret = []
+    for i in range(MAX_UI_BLOCKS):
+        if i < len(labels) and i < len(vals):
+            ret.append(gr.update(value=float(vals[i])))
+        else:
+            ret.append(gr.update())
+    return ret
 
-    if isxl:
-        j = 0
-        ret = []
-        for i, v in enumerate(ISXLBLOCK):
-            if v:
-                ret.append(gr.update(value = float(vals[j])))
-                j += 1
-            else:
-                ret.append(gr.update())
-        return ret
 
-    return [gr.update(value = float(v)) for v in vals]
-
-def slider2text(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,presets, preset, isxl):
+def slider2text(*args):
+    *slider_values, presets, preset, block_type = args
     az = find_preset_by_name(presets, preset)
     if az is not None:
         if any(element in az for element in RANCHA):return az
-    numbers = [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z]
-    if isxl:
-        newnums = []
-        for i,id in enumerate(BLOCKID[:-1]):
-            if id in BLOCKIDXLL[:-1]:
-                newnums.append(numbers[i])
-        numbers = newnums
+    numbers = list(slider_values[:ui_weight_count(block_type)])
     numbers = [str(x) for x in numbers]
     return gr.update(value = ",".join(numbers) )
 
-def on_change_dd_preset_weight(presets, preset):
+def on_change_dd_preset_weight(presets, preset, block_type):
     weights = find_preset_by_name(presets, preset)
     if weights is not None:
-        return text2slider(weights)
+        return text2slider(weights, block_type)
 
 def on_change_dd_preset_weight_r(presets, preset, ab):
     weights = find_preset_by_name(presets, preset)
@@ -1178,7 +1124,7 @@ def tagdicter(presets, rand = False):
         if "\t" in l:
             key = l.split("\t",1)[0]
             w = l.split("\t",1)[1]
-        if len([w for w in w.split(",")]) == 26:
+        if len([w for w in w.split(",")]) in (20, 26, 29):
             if rand and not any(element in w for element in RANCHA) : continue
             wdict[key.strip()]=w
     return ",".join(list(wdict.keys()))
@@ -1197,7 +1143,7 @@ def find_preset_by_name(presets, preset):
             w = l.split("\t",1)[1]
         else:
             continue
-        if key == preset and len([w for w in w.split(",")]) == 26:
+        if key == preset and len([w for w in w.split(",")]) in (20, 26, 29):
             return w
 
     return None
@@ -1208,10 +1154,49 @@ BLOCKIDXLL=['BASE', 'IN00', 'IN01', 'IN02', 'IN03', 'IN04', 'IN05', 'IN06', 'IN0
 BLOCKIDXLLL = ["CLIPL","CLIPG","IN0","IN00","IN10","IN20","IN30","IN40","IN41","IN410","IN411","IN50","IN51", "IN510","IN511","IN60","IN70","IN71","IN710","IN711","IN712","IN713","IN714", "IN715","IN716","IN717","IN718","IN719","IN80","IN81","IN810","IN811","IN812","IN813","IN814", "IN815","IN816","IN817","IN818","IN819","MID00","MID10","MID100","MID101","MID102","MID103", "MID104","MID105","MID106","MID107","MID108","MID109","MID20","OUT00","OUT01","OUT010","OUT011", "OUT012","OUT013","OUT014","OUT015","OUT016","OUT017","OUT018","OUT019","OUT10", "OUT11","OUT110","OUT111","OUT112","OUT113","OUT114","OUT115","OUT116","OUT117","OUT118","OUT119", "OUT20","OUT21","OUT210","OUT211","OUT212","OUT213","OUT214","OUT215","OUT216", "OUT217","OUT218","OUT219","OUT22","OUT30","OUT31","OUT310","OUT311","OUT40","OUT41","OUT410", "OUT411","OUT50","OUT51","OUT510","OUT511","OUT52","OUT60","OUT70","OUT80","OUT9", "TIME","LABEL", "VAE"]
 ISXLBLOCK=[True,  True,  True,  True,  True,  True,  True,  True,  True,  True, False, False, False, True,   True,   True,   True,   True,   True,   True,   True,   True,   True,  False,  False,  False]
 BLOCKIDS = [BLOCKID,BLOCKIDXL,BLOCKIDXLL,BLOCKIDXLLL]
+UI_BLOCK_TYPES = {
+    "1.X or 2.X": BLOCKID[:-1],
+    "XL": BLOCKIDXLL[:-1],
+    "Anima": BLOCKIDANIMA,
+}
+MAX_UI_BLOCKS = len(BLOCKIDANIMA)
+
+
+def ui_block_labels(block_type):
+    return UI_BLOCK_TYPES.get(block_type, UI_BLOCK_TYPES["1.X or 2.X"])
+
+
+def ui_weight_count(block_type):
+    return len(ui_block_labels(block_type))
+
+
+def ui_helper_targets(blockopt, block_type):
+    labels = ui_block_labels(block_type)
+    targets = set()
+
+    if "BASE" in blockopt and labels:
+        targets.add(0)
+
+    if block_type == "Anima":
+        if any(opt in blockopt for opt in ("INP*", "MID", "OUT*")):
+            targets.update(range(1, len(labels)))
+        return targets
+
+    for idx, label in enumerate(labels[1:], start=1):
+        if label.startswith("IN") and "INP*" in blockopt:
+            targets.add(idx)
+        elif label.startswith("M") and "MID" in blockopt:
+            targets.add(idx)
+        elif label.startswith("OUT") and "OUT*" in blockopt:
+            targets.add(idx)
+
+    return targets
 
 def modeltype(sd):
     if "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in sd.keys():
         return "XL"
+    elif is_anima_state_dict(sd):
+        return "Anima"
     elif any("double"in x for x in sd.keys()):
         if any("nf4"in x for x in sd.keys()):return "flux.nf4"
         if any("fp4"in x for x in sd.keys()):return "flux.fp4"
@@ -1233,7 +1218,7 @@ def loadkeys(model_a, lora):
             keys.append([i,"LoRA",key,sd[key].shape])
     else:    
         for i, key in enumerate(sd.keys()):
-            keys.append([i,blockfromkey(key,"XL" in mtype,"flux" in mtype),key,sd[key].shape])
+            keys.append([i,blockfromkey(key,"XL" == mtype,"flux" in mtype,"Anima" == mtype),key,sd[key].shape])
 
     return keys,keys
 
@@ -1260,8 +1245,10 @@ def calccosinedif(model_a,model_b,mode,settings,include,calc):
     blocksim = {}
     blockvals = []
     attn2 = {}
-    isxl = "XL" == modeltype(a)
-    blockids = BLOCKIDXLL if isxl else BLOCKID
+    mtype = modeltype(a)
+    isxl = mtype == "XL"
+    isanima = mtype == "Anima"
+    blockids = BLOCKIDANIMA if isanima else (BLOCKIDXLL if isxl else BLOCKID)
     for bl in blockids:
         blocksim[bl] = []
     blocksim["VAE"] = []
@@ -1275,7 +1262,7 @@ def calccosinedif(model_a,model_b,mode,settings,include,calc):
     else:
         for key in tqdm(a.keys(), desc="Calculating cosine similarity"):
             block = None
-            if blockfromkey(key,isxl) == "Not Merge": continue
+            if blockfromkey(key,isxl,False,isanima) == "Not Merge": continue
             if "model_ema" in key: continue
             if "model" not in key:continue
             if "first_stage_model" in key and not ("VAE" in inc):
@@ -1288,7 +1275,7 @@ def calccosinedif(model_a,model_b,mode,settings,include,calc):
                 a_flat = a[key].view(-1).to(torch.float32)
                 b_flat = b[key].view(-1).to(torch.float32)
                 simab = torch.nn.functional.cosine_similarity(a_flat.unsqueeze(0), b_flat.unsqueeze(0))
-                if block is None: block,blocks26 = blockfromkey(key,isxl)
+                if block is None: block,blocks26 = blockfromkey(key,isxl,False,isanima)
                 if block =="Not Merge" :continue
                 cosine_similarities.append([block, key, round(simab.item()*100,3)])
                 blocksim[blocks26].append(round(simab.item()*100,3))

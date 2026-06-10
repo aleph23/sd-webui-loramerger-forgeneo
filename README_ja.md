@@ -1,3 +1,6 @@
+# SuperMerger-Forge-Neo
+Forge Neo 互換性の追加修正（lora_in_memory_limit / lora_not_found オプションのガード、LoKr LoRA のマージ対応）、および日本語の UI テキストとコメントの英語訳。
+
 # SuperMerger
 - [AUTOMATIC1111's stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui) 用のモデルマージ拡張
 - マージしたモデルを保存せず直接生成に使用できます
