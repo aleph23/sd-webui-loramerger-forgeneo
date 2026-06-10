@@ -1,5 +1,7 @@
-# SuperMerger-Forge-Neo
-Additional Forge Neo compatibility fixes (lora_in_memory_limit / lora_not_found option guards, LoKr LoRA merge support) and English translation of the Japanese UI text and comments.
+# SuperMerger-ForgeNeo-Anima
+- This fork adds support for ForgeNeo and Anima.
+- Most of the changes in this fork were implemented by Codex, so I cannot guarantee the correctness of all behavior or documentation.
+- Additional Forge Neo compatibility fixes (lora_in_memory_limit / lora_not_found option guards, LoKr LoRA merge support) and English translation of the Japanese UI text and comments.
 
 # SuperMerger
 - Model merge extention for [AUTOMATIC1111's stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui) 

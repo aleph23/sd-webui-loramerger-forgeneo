@@ -139,11 +139,19 @@ def smergegen(weights_a,weights_b,model_a,model_b,model_c,base_alpha,base_beta,m
 
     save = True if SAVEMODES[0] in save_sets else False
 
-    if save and (forge or neo):
+    # forge_save() rebuilds the checkpoint from Forge's live objects and writes CLIP
+    # under the 'text_encoders.' prefix. That is correct for Anima (Qwen text encoder)
+    # but wrong for SDXL/Illustrious/SD1.5, whose on-disk format expects
+    # 'conditioner.embedders.' keys -- saving via forge_save makes Forge fail to
+    # reload the file with 'You do not have CLIP state dict!'. So only use forge_save
+    # for Anima; for every other model save the merged dict directly via savemodel,
+    # which writes the standard layout (and keeps the merged fp16 precision).
+    save_is_anima = save and is_anima_state_dict(theta_0)
+    if save and (forge or neo) and save_is_anima:
         model_loader(checkpoint_info, theta_0, metadata, currentmodel)
         result = forge_save(custom_name if custom_name else currentmodel, save_sets)
     else:
-        result = savemodel(theta_0,currentmodel,custom_name,save_sets,metadata) if save else "Merged model loaded:"+currentmodel
+        result = savemodel(dict(theta_0),currentmodel,custom_name,save_sets,metadata) if save else "Merged model loaded:"+currentmodel
         model_loader(checkpoint_info, theta_0, metadata, currentmodel)
 
     cachedealer(False)
@@ -2051,6 +2059,21 @@ def forge_save(filename, save_sets):
 
     sd.update(clip_sd)
     sd.update(get_state_dict_after_quant(shared.sd_model.forge_objects.vae.first_stage_model, prefix="vae."))
+
+    # Forge Neo keeps runtime objects (notably the VAE) in bf16, so saving them
+    # straight from forge_objects yields a bf16 checkpoint even when both source
+    # models were fp16. bf16 is never the intended output here, so always cast it
+    # back to fp16. If the user ticked "fp16" in save settings, also bring any
+    # remaining fp32/fp64 tensors down to fp16 (matching the non-Neo save path).
+    want_fp16 = "fp16" in save_sets
+    for key in list(sd.keys()):
+        t = sd[key]
+        if not isinstance(t, torch.Tensor):
+            continue
+        if t.dtype == torch.bfloat16:
+            sd[key] = t.to(torch.float16)
+        elif want_fp16 and t.dtype in (torch.float32, torch.float64):
+            sd[key] = t.to(torch.float16)
 
     safetensors.torch.save_file(sd, long_filename)
     print(f'Saved checkpoint at: {long_filename}')
