@@ -31,7 +31,7 @@ try:
     from modules.infotext_utils import create_override_settings_dict
 except ImportError:
     from modules.generation_parameters_copypaste import create_override_settings_dict
-from scripts.mergers.model_util import filenamecutter,savemodel
+from scripts.mergers.model_util import filenamecutter,savemodel, should_save_anima_net_format, convert_anima_state_dict_to_net, cast_state_dict_floating, resolve_anima_save_dtype
 from math import ceil
 import sys
 from multiprocessing import cpu_count
@@ -2049,8 +2049,14 @@ def forge_save(filename, save_sets):
         if suffix:
             sd[f"model.diffusion_model.llm_adapter.{suffix}"] = clip_sd.pop(key)
 
-    sd.update(clip_sd)
-    sd.update(get_state_dict_after_quant(shared.sd_model.forge_objects.vae.first_stage_model, prefix="vae."))
+    if should_save_anima_net_format(sd):
+        sd = convert_anima_state_dict_to_net(sd)
+        target_dtype = resolve_anima_save_dtype(save_sets)
+        sd = cast_state_dict_floating(sd, target_dtype)
+        print(f"Saving Anima checkpoint in base-compatible net.* format ({target_dtype}).")
+    else:
+        sd.update(clip_sd)
+        sd.update(get_state_dict_after_quant(shared.sd_model.forge_objects.vae.first_stage_model, prefix="vae."))
 
     safetensors.torch.save_file(sd, long_filename)
     print(f'Saved checkpoint at: {long_filename}')

@@ -51,6 +51,48 @@ def to_half(sd):
             sd[key] = sd[key].half()
     return sd
 
+def should_save_anima_net_format(sd):
+    has_anima_unet = any(
+        key.startswith("net.blocks.")
+        or key.startswith("model.diffusion_model.blocks.")
+        for key in sd.keys()
+    )
+    has_llm_adapter = any(
+        key.startswith("net.llm_adapter.")
+        or key.startswith("model.diffusion_model.llm_adapter.")
+        or key.startswith("llm_adapter.")
+        or ".llm_adapter." in key
+        for key in sd.keys()
+    )
+    return has_anima_unet and has_llm_adapter
+
+def convert_anima_state_dict_to_net(sd):
+    converted = {}
+    diffusion_prefix = "model.diffusion_model."
+
+    for key, value in sd.items():
+        if key.startswith("net."):
+            converted[key] = value
+        elif key.startswith(diffusion_prefix):
+            converted["net." + key[len(diffusion_prefix):]] = value
+        elif key.startswith("llm_adapter."):
+            converted["net." + key] = value
+
+    return converted
+
+def cast_state_dict_floating(sd, dtype):
+    for key, value in list(sd.items()):
+        if hasattr(value, "is_floating_point") and value.is_floating_point():
+            sd[key] = value.to(dtype=dtype)
+    return sd
+
+def resolve_anima_save_dtype(savesets):
+    if "fp16" in savesets:
+        return torch.float16
+    if "float" in savesets or "float32" in savesets or "use float32" in savesets:
+        return torch.float32
+    return torch.bfloat16
+
 def savemodel(state_dict,currentmodel,fname,savesets,metadata={}):
     other_dict = {}
     if state_dict is None:
@@ -136,17 +178,23 @@ def savemodel(state_dict,currentmodel,fname,savesets,metadata={}):
         return _err_msg
 
     print("Saving...")
-    isxl = "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in state_dict
-    if isxl:
-        # prune share memory tensors, "cond_stage_model." prefixed base tensors are share memory with "conditioner." prefixed tensors
-        for key in list(state_dict.keys()):
-            if "cond_stage_model." in key:
-                del state_dict[key]
+    if should_save_anima_net_format(state_dict):
+        state_dict = convert_anima_state_dict_to_net(state_dict)
+        target_dtype = resolve_anima_save_dtype(savesets)
+        state_dict = cast_state_dict_floating(state_dict, target_dtype)
+        print(f"Saving Anima checkpoint in base-compatible net.* format ({target_dtype}).")
+    else:
+        isxl = "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in state_dict
+        if isxl:
+            # prune share memory tensors, "cond_stage_model." prefixed base tensors are share memory with "conditioner." prefixed tensors
+            for key in list(state_dict.keys()):
+                if "cond_stage_model." in key:
+                    del state_dict[key]
 
-    if "fp16" in savesets:
-        state_dict = to_half(state_dict)
-    if "prune" in savesets:
-        state_dict = prune_model(state_dict, isxl)
+        if "fp16" in savesets:
+            state_dict = to_half(state_dict)
+        if "prune" in savesets:
+            state_dict = prune_model(state_dict, isxl)
 
     # for safetensors contiguous error
     print("Check contiguous...")
