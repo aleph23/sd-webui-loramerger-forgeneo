@@ -1,4 +1,8 @@
 # Changelog
+
+### 2026.09.18
+[See Comprehensive Report (en_US)](./change-log/revision_report_2026-09-18_en-US.md) or [(jp)](./change-log/revision_report_2026-09-18_jp.md)
+
 ### 2023.10.15  
 Adjust機能が改良されました。CD TunerのようにBrightness, Cyan-Red, Magenta-Gree, Yellow-Blueのような色指定に変わります。  
 その他バグfix  
