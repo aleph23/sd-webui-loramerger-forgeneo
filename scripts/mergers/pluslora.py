@@ -548,18 +548,18 @@ def on_ui_tabs():
 
     with gr.Blocks(analytics_enabled=False) :
         sml_submit_result = gr.Textbox(label="Message")
-        # 1行目: Merge to Checkpoint(Model A) と 右側の空きスペース（ボタン1個分）
+        # First line: Merge to Checkpoint(Model A) And the empty space on the right (enough for one button)
         with gr.Row(equal_height=False):
             sml_cpmerge = gr.Button(elem_id="model_merger_merge", value="Merge to Checkpoint(Model A)",variant='primary')
-            # 透明なボタンを追加して、右側の空きスペースを確保
+            # Add a transparent button to free up space on the right.
             gr.Button(value="", interactive=False, elem_id=["transparent-btn"])
 
-        # 2行目: Merge LoRAs(ADD) と Merge LoRAs(SVD) を横並びに配置
+        # Second line: Merge LoRAs(ADD) と Merge LoRAs(SVD) Arrange them side by side
         with gr.Row(equal_height=False):
             sml_merge = gr.Button(elem_id="model_merger_merge_add", value="Merge LoRAs(ADD)",variant='primary')
             sml_merge_svd = gr.Button(elem_id="model_merger_merge_svd", value="Merge LoRAs(SVD)",variant='primary')
 
-        # 3行目: 左側にsettingsとfilename(option)、右側にModel Aを配置
+        # Third line: On the left side settingsとfilename(option)、on the right Model A Place
         with gr.Row(equal_height=False):
             with gr.Column():
                 with gr.Row(equal_height=False):
@@ -675,7 +675,7 @@ def on_ui_tabs():
             return outs + outs_list
 
         def calculatedim(calcsets, device):
-            # CSVから読み込む
+            # CSVLoad from
             if "Load from CSV" in calcsets:
                 with open(dimpath, mode='r', encoding='utf-8') as csv_file:
                     csv_reader = csv.reader(csv_file)
@@ -696,7 +696,7 @@ def on_ui_tabs():
                     
                 ldict[name] = [d,t,s]
 
-            # CSVに保存
+            # CSVsave
             if "Save as CSV" in calcsets:
                 with open(dimpath, mode='w', encoding='utf-8', newline='') as csv_file:
                     csv_writer = csv.writer(csv_file)
@@ -755,14 +755,14 @@ def on_ui_tabs():
 
 
 ##############################################################
-####### LoRAマージ処理
+####### LoRAMerge process
 
 def lmerge_add(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device):
-    # 加算マージ (ADD) を実行
+    # Perform an additive merge (ADD).
     return lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device,merge_mode="add")
 
 def lmerge_svd(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device):
-    # SVDマージ (SVD) を実行
+    # SVD Perform a decompositional merge (SVD).
     return lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device,merge_mode="svd")
 
 def lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device,merge_mode="add"):
@@ -785,7 +785,7 @@ def lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_preci
             if ":" not in l or not any(l.count(",") == x - 1 for x in BLOCKNUMS) : continue
             ldict[l.split(":")[0]]=l.split(":")[1]
 
-        ln, lr, ld, lt, lm, ls = [], [], [], [], [], [] #lm: 各LoRAのマージ用メタデータ #ls: SD-?
+        ln, lr, ld, lt, lm, ls = [], [], [], [], [], [] #lm: Merge metadata for each LoRA #ls: SD-?
         dmax = 1
 
         for i,n in enumerate(lnames):
@@ -825,7 +825,7 @@ def lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_preci
             if d != "LyCORIS" and isinstance(d, int):
                 if d > dmax : dmax = d
             
-            # LoRA毎のメタデータを保存
+            # LoRASave metadata for each
             meta = prepare_merge_metadata( n[1], ",".join( [str(n) for n in ratio] ), c_lora )
             lm.append( meta )
 
@@ -834,9 +834,9 @@ def lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_preci
         loraname = filename.replace(".safetensors", "")
         filename = os.path.join(shared.cmd_opts.lora_dir,filename)
 
-        # マージ計算（特に重いSVD処理）を実行する前に、出力ファイルの重複を確認する
+        # Before performing merge calculations (especially heavy SVD processing), check for duplicate output files.
         if os.path.isfile(filename) and not "overwrite" in settings:
-            _err_msg = f"Output file ({filename}) existed and was not saved"
+            _err_msg = f"Output file ({filename}) exists. Enable overwrite or choose a different name."
             print(_err_msg)
             return _err_msg
 
@@ -845,24 +845,24 @@ def lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_preci
         dim = int(dim) if dim != "no" and dim != "auto" else 0
 
         if merge_mode == "svd":
-            # SVDマージ: dimが指定されていればその値、noまたはautoの場合は元のLoRAの最大ランクdmax（取得不能なら8）を使用
+            # SVDMerge: If dim is specified, use its value; if no or auto, use the original LoRA's maximum rank dmax (8 if dmax is unavailable).
             target_rank = int(dim) if dim > 0 else (dmax if dmax > 1 else 8)
-            print(f"SVDマージを実行します: target rank = {target_rank}")
+            print(f"Perform SVD merge: target rank = {target_rank}")
             sd = merge_lora_models_dim(ln, lr, target_rank, settings, device, calc_precision)
         elif "LyCORIS" in ld:
             if len(ld) !=1:
                 return "multiple merge of LyCORIS is not supported"
             sd = lycomerge(ln[0], lr[0], calc_precision, device)
         elif dim > 0:
-            print("change demension to ", dim)
-            sd = merge_lora_models_dim(ln, lr, dim,settings,device,calc_precision)
+            print("change dimension to ", dim)
+            sd = merge_lora_models_dim(ln, lr, dim, settings, device, calc_precision)
         elif auto and ld.count(ld[0]) != len(ld):
-            print("change demension to ",dmax)
-            sd = merge_lora_models_dim(ln, lr, dmax,settings,device,calc_precision)
+            print("change dimension to ", dmax)
+            sd = merge_lora_models_dim(ln, lr, dmax, settings, device, calc_precision)
         else:
             sd = merge_lora_models(ln, lr, settings, False, calc_precision, device)
 
-        # マージ後のメタデータを取得
+        # Get metadata after merging
         metadata = create_merge_metadata( sd, lm, loraname, save_precision,metasets )
 
         save_to_file(filename,sd,sd, str_to_dtype(save_precision), metadata)
@@ -921,7 +921,7 @@ def merge_lora_models(models, ratios, sets, locon, calc_precision, device):
 
             if key in merged_sd:
                 assert merged_sd[key].size() == lora_sd[key].size(), (
-                    f"weights shape mismatch merging v1 and v2, different dims? "
+                    f"tensor mismatch merging v1 and v2, different dims? "
                     f"/ 重みのサイズが合いません。v1とv2、または次元数の異なるモデルはマージできません"
                     f" {merged_sd[key].size()} ,{lora_sd[key].size()}, {lora_module_name}"
                 )
@@ -1030,7 +1030,7 @@ def merge_lora_models_dim(models, ratios, new_rank, sets, device, calc_precision
                     else:
                         out_dim, in_dim = mat.shape[0], mat.shape[1]
 
-                    # ランクの上限チェック（行列の次元数を超えないように制限）
+                    # Rank upper limit check (restricts the number of dimensions of the matrix to not exceed the limit)
                     module_new_rank = min(new_rank, in_dim, out_dim)
 
                     U, S, Vh = torch.linalg.svd(mat)
