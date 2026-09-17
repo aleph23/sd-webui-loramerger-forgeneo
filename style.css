@@ -12,7 +12,7 @@ button.compact_button {
     max-width: min(90vw, 96rem) !important;
 }
 
-/* Model Aのラベル下の余白を無くし、filename(option)と高さを合わせる */
+/* Model A - Remove the margin below the label.、filename(option) and adjust the height */
 #model_converter_model_name span:not(.has-info),
 #model_converter_model_name label span,
 .gradio-dropdown span:not(.has-info) {
