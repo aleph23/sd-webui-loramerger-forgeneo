@@ -11,3 +11,18 @@ button.compact_button {
     min-width: min(80vw, 72rem) !important;
     max-width: min(90vw, 96rem) !important;
 }
+
+/* Model Aのラベル下の余白を無くし、filename(option)と高さを合わせる */
+#model_converter_model_name span:not(.has-info),
+#model_converter_model_name label span,
+.gradio-dropdown span:not(.has-info) {
+    margin-bottom: 0 !important;
+}
+
+#transparent-btn {
+    background-color: transparent !important;
+    opacity: 0 !important;
+    cursor: default !important;
+    border: none;
+    pointer-events: none;
+}

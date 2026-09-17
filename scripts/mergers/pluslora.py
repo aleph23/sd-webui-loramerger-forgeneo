@@ -18,10 +18,9 @@ import torch
 from modules import extra_networks, scripts, sd_models, launch_utils
 from modules.ui import create_refresh_button
 from safetensors.torch import load_file, save_file
-from scripts.kohyas import extract_lora_from_models as ext
 from scripts.A1111 import networks as nets
 from scripts.mergers.model_util import filenamecutter, savemodel
-from scripts.mergers.mergers import extract_super, unload_forge, q_dequantize, q_quantize, qdtyper, prefixer, BLOCKIDFLUX
+from scripts.mergers.mergers import q_dequantize, q_quantize, qdtyper, prefixer, BLOCKIDFLUX
 from tqdm import tqdm
 
 forge = hasattr(sd_models, "forge_model_reload") or launch_utils.git_tag()[0:2] == "f2"
@@ -549,10 +548,20 @@ def on_ui_tabs():
 
     with gr.Blocks(analytics_enabled=False) :
         sml_submit_result = gr.Textbox(label="Message")
+        # 1行目: Merge to Checkpoint(Model A) と 右側の空きスペース（ボタン1個分）
+        with gr.Row(equal_height=False):
+            sml_cpmerge = gr.Button(elem_id="model_merger_merge", value="Merge to Checkpoint(Model A)",variant='primary')
+            # 透明なボタンを追加して、右側の空きスペースを確保
+            gr.Button(value="", interactive=False, elem_id=["transparent-btn"])
+
+        # 2行目: Merge LoRAs(ADD) と Merge LoRAs(SVD) を横並びに配置
+        with gr.Row(equal_height=False):
+            sml_merge = gr.Button(elem_id="model_merger_merge_add", value="Merge LoRAs(ADD)",variant='primary')
+            sml_merge_svd = gr.Button(elem_id="model_merger_merge_svd", value="Merge LoRAs(SVD)",variant='primary')
+
+        # 3行目: 左側にsettingsとfilename(option)、右側にModel Aを配置
         with gr.Row(equal_height=False):
             with gr.Column():
-                sml_cpmerge = gr.Button(elem_id="model_merger_merge", value="Merge to Checkpoint(Model A)",variant='primary')
-                sml_merge = gr.Button(elem_id="model_merger_merge", value="Merge LoRAs",variant='primary')
                 with gr.Row(equal_height=False):
                     sml_settings = gr.CheckboxGroup(["same to Strength", "overwrite"], label="settings")
                     sml_filename = gr.Textbox(label="filename(option)",lines=1,visible =True,interactive  = True)  
@@ -562,18 +571,9 @@ def on_ui_tabs():
                     calc_precision = gr.Radio(label = "calc precision(fp16:cuda only)" ,choices=["float","fp16","bf16"],value = "float",type="value")
                     device = gr.Radio(label = "device",choices=["cuda","cpu"],value = "cuda",type="value")
             with gr.Column():
-                sml_makelora = gr.Button(elem_id="model_merger_merge", value="Make LoRA (alpha * Model A - beta * Model B)",variant='primary')
-                sml_extract = gr.Button(elem_id="model_merger_merge", value="Extract from two LoRAs",variant='primary')
                 with gr.Row(equal_height=False):
                     sml_model_a = gr.Dropdown(sorted_checkpoint_tiles(),elem_id="model_converter_model_name",label="Model A",interactive=True)
                     create_refresh_button(sml_model_a, sd_models.list_models,lambda: {"choices": sorted_checkpoint_tiles()},"refresh_checkpoint_Z")
-                with gr.Row(equal_height=False):
-                    sml_model_b = gr.Dropdown(sorted_checkpoint_tiles(),elem_id="model_converter_model_name",label="Model B",interactive=True)
-                    create_refresh_button(sml_model_b, sd_models.list_models,lambda: {"choices": sorted_checkpoint_tiles()},"refresh_checkpoint_Z")
-                with gr.Row(equal_height=False):
-                    alpha = gr.Slider(label="alpha", minimum=-1.0, maximum=2, step=0.001, value=1)
-                    beta = gr.Slider(label="beta", minimum=-1.0, maximum=2, step=0.001, value=1)
-                    smooth = gr.Slider(label="gamma(smooth)", minimum=-1, maximum=20, step=0.1, value=1)
         
         sml_dim = gr.Radio(label = "remake dimension",choices = ["no","auto",4,8,16,32,64,128,256,512,768,1024],value = "no",type = "value") 
         sml_loranames = gr.Textbox(label='LoRAname1:ratio1:Blocks1,LoRAname2:ratio2:Blocks2,...(":blocks" is option, not necessary)',lines=1,value="",visible =True)
@@ -614,20 +614,14 @@ def on_ui_tabs():
         )
 
         sml_merge.click(
-            fn=lmerge,
-            inputs=[sml_loranames,sml_loraratios,sml_settings,sml_filename,sml_dim,save_precision,calc_precision,sml_metasettings,alpha,beta,smooth,gr.Checkbox(value = True,visible = False),device],
+            fn=lmerge_add,
+            inputs=[sml_loranames,sml_loraratios,sml_settings,sml_filename,sml_dim,save_precision,calc_precision,sml_metasettings,device],
             outputs=[sml_submit_result]
         )
 
-        sml_extract.click(
-            fn=lmerge,
-            inputs=[sml_loranames,sml_loraratios,sml_settings,sml_filename,sml_dim,save_precision,calc_precision,sml_metasettings,alpha,beta,smooth,gr.Checkbox(value = False,visible = False),device],
-            outputs=[sml_submit_result]
-        )
-
-        sml_makelora.click(
-            fn=makelora,
-            inputs=[sml_model_a,sml_model_b,sml_dim,sml_filename,sml_settings,alpha,beta,save_precision,calc_precision,sml_metasettings,device],
+        sml_merge_svd.click(
+            fn=lmerge_svd,
+            inputs=[sml_loranames,sml_loraratios,sml_settings,sml_filename,sml_dim,save_precision,calc_precision,sml_metasettings,device],
             outputs=[sml_submit_result]
         )
 
@@ -759,77 +753,19 @@ def on_ui_tabs():
         sml_dims_anima.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras]) 
         sml_loratypes.change(fn=dimselector,inputs=[sml_dims,sml_dims_xl,sml_dims_flux,sml_dims_anima,sml_loratypes],outputs=[sml_loras]) 
 
-##############################################################
-####### make LoRA from checkpoint
-
-def makelora(model_a,model_b,dim,saveto,settings,alpha,beta,save_precision,calc_precision,metasets,device):
-    print("make LoRA start")
-    if model_a == "" or model_b =="":
-      return "ERROR: No model Selected"
-    gc.collect()
-
-    try:
-        currentinfo = shared.sd_model.sd_checkpoint_info
-    except:
-        currentinfo = None
-
-    lowvramdealer() #web-uiのバグ対策
-
-    checkpoint_info = sd_models.get_closet_checkpoint_match(model_a)
-    load_model(checkpoint_info)
-
-    model = shared.sd_model
-    print(type(model).__name__)
-    print("XL" in type(model).__name__)
-
-    is_sdxl = type(model).__name__ == "StableDiffusionXL" or getattr(model,'is_sdxl', False)
-    is_sd2 = type(model).__name__ == "StableDiffusion2" or getattr(model,'is_sd2', False)
-    is_sd1 = type(model).__name__ == "StableDiffusion" or getattr(model,'is_sd1', False)
-    is_flux = type(model).__name__ == "Flux" or getattr(model,'is_flux', False)
-
-    print(f"Detected model type: SDXL: {is_sdxl}, SD2.X: {is_sd2}, SD1.X: {is_sd1}")
-
-    if forge:
-        unload_forge()
-    else:
-        sd_models.unload_model_weights()
-
-    if saveto =="" : saveto = makeloraname(model_a,model_b)
-    if not ".safetensors" in saveto :saveto  += ".safetensors"
-    saveto = os.path.join(shared.cmd_opts.lora_dir,saveto)
-
-    dim = 128 if type(dim) != int else int(dim)
-    if os.path.isfile(saveto ) and not "overwrite" in settings:
-        _err_msg = f"Output file ({saveto}) existed and was not saved"
-        print(_err_msg)
-        return _err_msg
-
-    args = Kohya_extract_args(
-        v2=is_sd2,
-        v_parameterization=True,
-        sdxl=is_sdxl,
-        save_precision=save_precision,
-        model_org=fullpathfromname(model_b),
-        model_tuned=fullpathfromname(model_a),
-        save_to=saveto,
-        dim=dim,
-        conv_dim=None,
-        device=device,
-        no_metadata=False,
-        alpha = alpha,
-        beta = beta
-    )
-
-    result = ext.svd(args)
-
-    if currentinfo:
-        load_model(currentinfo)
-    return result
 
 ##############################################################
-####### merge LoRAs
+####### LoRAマージ処理
 
-def lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,alpha,beta,smooth,merge,device):
+def lmerge_add(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device):
+    # 加算マージ (ADD) を実行
+    return lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device,merge_mode="add")
+
+def lmerge_svd(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device):
+    # SVDマージ (SVD) を実行
+    return lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device,merge_mode="svd")
+
+def lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_precision,metasets,device,merge_mode="add"):
     try:
         import lora
         loras_on_disk = [lora.available_loras.get(name, None) for name in loranames]
@@ -898,33 +834,34 @@ def lmerge(loranames,loraratioss,settings,filename,dim,save_precision,calc_preci
         loraname = filename.replace(".safetensors", "")
         filename = os.path.join(shared.cmd_opts.lora_dir,filename)
 
+        # マージ計算（特に重いSVD処理）を実行する前に、出力ファイルの重複を確認する
+        if os.path.isfile(filename) and not "overwrite" in settings:
+            _err_msg = f"Output file ({filename}) existed and was not saved"
+            print(_err_msg)
+            return _err_msg
+
         auto = True if dim == "auto" else False
     
         dim = int(dim) if dim != "no" and dim != "auto" else 0
 
-        if merge:
-            if "LyCORIS" in ld:
-                if len(ld) !=1:
-                    return "multiple merge of LyCORIS is not supported"
-                sd = lycomerge(ln[0], lr[0], calc_precision, device)
-            elif dim > 0:
-                print("change demension to ", dim)
-                sd = merge_lora_models_dim(ln, lr, dim,settings,device,calc_precision)
-            elif auto and ld.count(ld[0]) != len(ld):
-                print("change demension to ",dmax)
-                sd = merge_lora_models_dim(ln, lr, dmax,settings,device,calc_precision)
-            else:
-                sd = merge_lora_models(ln, lr, settings, False, calc_precision, device)
-
-            if os.path.isfile(filename) and not "overwrite" in settings:
-                _err_msg = f"Output file ({filename}) existed and was not saved"
-                print(_err_msg)
-                return _err_msg
+        if merge_mode == "svd":
+            # SVDマージ: dimが指定されていればその値、noまたはautoの場合は元のLoRAの最大ランクdmax（取得不能なら8）を使用
+            target_rank = int(dim) if dim > 0 else (dmax if dmax > 1 else 8)
+            print(f"SVDマージを実行します: target rank = {target_rank}")
+            sd = merge_lora_models_dim(ln, lr, target_rank, settings, device, calc_precision)
+        elif "LyCORIS" in ld:
+            if len(ld) !=1:
+                return "multiple merge of LyCORIS is not supported"
+            sd = lycomerge(ln[0], lr[0], calc_precision, device)
+        elif dim > 0:
+            print("change demension to ", dim)
+            sd = merge_lora_models_dim(ln, lr, dim,settings,device,calc_precision)
+        elif auto and ld.count(ld[0]) != len(ld):
+            print("change demension to ",dmax)
+            sd = merge_lora_models_dim(ln, lr, dmax,settings,device,calc_precision)
         else:
-            a = merge_lora_models(ln[0:1], lr[0:1], settings, False, calc_precision, device)
-            b = merge_lora_models(ln[1:2], lr[1:2], settings, False, calc_precision, device)
-            sd = extract_two(a,b,alpha,beta,smooth)
-        
+            sd = merge_lora_models(ln, lr, settings, False, calc_precision, device)
+
         # マージ後のメタデータを取得
         metadata = create_merge_metadata( sd, lm, loraname, save_precision,metasets )
 
@@ -1003,6 +940,8 @@ def merge_lora_models(models, ratios, sets, locon, calc_precision, device):
 
     return merged_sd
 
+CLAMP_QUANTILE = 0.99
+
 def merge_lora_models_dim(models, ratios, new_rank, sets, device, calc_precision):
     CHUNK_SIZE = 50
 
@@ -1058,6 +997,8 @@ def merge_lora_models_dim(models, ratios, new_rank, sets, device, calc_precision
                     conv2d = len(down_weight.size()) == 4
                     if not conv2d:
                         diff = (up_weight @ down_weight)
+                    elif down_weight.size()[2:4] == (1, 1):
+                        diff = (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
                     else:
                         diff = torch.nn.functional.conv2d(
                             down_weight.permute(1, 0, 2, 3), up_weight
@@ -1086,13 +1027,18 @@ def merge_lora_models_dim(models, ratios, new_rank, sets, device, calc_precision
                     if conv2d:
                         out_dim, in_dim, k_h, k_w = original_shapes_chunk[lora_module_name]
                         mat = mat.reshape(out_dim, -1)
+                    else:
+                        out_dim, in_dim = mat.shape[0], mat.shape[1]
+
+                    # ランクの上限チェック（行列の次元数を超えないように制限）
+                    module_new_rank = min(new_rank, in_dim, out_dim)
 
                     U, S, Vh = torch.linalg.svd(mat)
 
-                    U = U[:, :new_rank]
-                    S = S[:new_rank]
+                    U = U[:, :module_new_rank]
+                    S = S[:module_new_rank]
                     U = U @ torch.diag(S)
-                    Vh = Vh[:new_rank, :]
+                    Vh = Vh[:module_new_rank, :]
 
                     dist = torch.cat([U.flatten(), Vh.flatten()])
                     hi_val = torch.quantile(dist, CLAMP_QUANTILE)
@@ -1106,11 +1052,11 @@ def merge_lora_models_dim(models, ratios, new_rank, sets, device, calc_precision
                     if conv2d:
                         out_dim, in_dim, k_h, k_w = original_shapes_chunk[lora_module_name]
                         new_up_weight = new_up_weight.unsqueeze(2).unsqueeze(3)
-                        new_down_weight = new_down_weight.view(new_rank, in_dim, k_h, k_w)
+                        new_down_weight = new_down_weight.view(module_new_rank, in_dim, k_h, k_w)
 
                     merged_lora_sd[lora_module_name + '.lora_up.weight'] = new_up_weight.to("cpu").contiguous()
                     merged_lora_sd[lora_module_name + '.lora_down.weight'] = new_down_weight.to("cpu").contiguous()
-                    merged_lora_sd[lora_module_name + '.alpha'] = torch.tensor(float(new_rank))
+                    merged_lora_sd[lora_module_name + '.alpha'] = torch.tensor(float(module_new_rank))
 
                     pbar_overall.update(1)
 
@@ -1121,45 +1067,6 @@ def merge_lora_models_dim(models, ratios, new_rank, sets, device, calc_precision
     print("LoRA merge process completed.")
     return merged_lora_sd
 
-def extract_two(a,b,pa,pb,ps):
-    base_alphas = {}                          # alpha for merged model
-    base_dims = {}
-    merged_sd = {}
-    alphas = {}                             # alpha for current model
-    dims = {}                               # dims for current model
-
-    base_dims_a, base_alphas_a, dims, alphas_a = dimalpha(a, base_dims, base_alphas)
-    base_dims_b, base_alphas_b, dims, alphas_b = dimalpha(b, base_dims, base_alphas)
-
-    print(f"dim: {list(set(dims.values()))}, alpha: {list(set(alphas.values()))}")
-
-    # merge
-    print(f"merging...")
-    for key in a.keys():
-        if 'alpha' in key:
-            continue
-
-        lora_module_name = key[:key.rfind(".lora_")]
-
-        base_alpha_a = base_alphas_a[lora_module_name]
-        base_alpha_b = base_alphas_b[lora_module_name]
-        alpha_a = alphas_a[lora_module_name]
-        alpha_b = alphas_b[lora_module_name]
-
-        scale_a = math.sqrt(alpha_a / base_alpha_a) 
-        scale_b = math.sqrt(alpha_b / base_alpha_b)
-
-        merged_sd[key] = extract_super(None,a[key] * scale_a,b[key] * scale_b,pa,pb,ps)
-
-    # set alpha to sd
-    for lora_module_name, alpha in base_alphas.items():
-        key = lora_module_name + ".alpha"
-        merged_sd[key] = torch.tensor(alpha)
-
-    print("merged model")
-    print(f"dim: {list(set(base_dims.values()))}, alpha: {list(set(base_alphas.values()))}")
-
-    return merged_sd
 
 def lycomerge(filename, ratios, calc_precision, device):
     merge_dtype = str_to_dtype(calc_precision)
@@ -1932,15 +1839,6 @@ def dimalpha(lora_sd, base_dims={}, base_alphas={}):
     return base_dims, base_alphas, dims, alphas
 
 
-def fullpathfromname(name):
-    if hash == "" or hash ==[]: return ""
-    checkpoint_info = sd_models.get_closet_checkpoint_match(name)
-    return checkpoint_info.filename
-
-def makeloraname(model_a,model_b):
-    model_a=filenamecutter(model_a)
-    model_b=filenamecutter(model_b)
-    return "lora_"+model_a+"-"+model_b
 
 V2ENCODER = "resblocks"
 
@@ -2193,38 +2091,6 @@ def syntaxdealer(items,type1,type2,index): #type "unet=", "x=", "lwbe="
     if index > len(items) - 1 :return None
     return items[index] if "@" not in items[index] else 1
 
-##############################################################
-####### Extract lora from checkpoints args
-class Kohya_extract_args:
-    def __init__(
-        self,
-        v2=False,
-        v_parameterization=None,
-        sdxl=False,
-        save_precision=None,
-        model_org=None,
-        model_tuned=None,
-        save_to=None,
-        dim=4,
-        conv_dim=None,
-        device=None,
-        no_metadata=False,
-        alpha = 1,
-        beta = 1
-    ):
-        self.v2 = v2
-        self.v_parameterization = v_parameterization
-        self.sdxl = sdxl
-        self.save_precision = save_precision
-        self.model_org = model_org
-        self.model_tuned = model_tuned
-        self.save_to = save_to
-        self.dim = dim
-        self.conv_dim = conv_dim
-        self.device = device
-        self.no_metadata = no_metadata
-        self.alpha = alpha
-        self.beta = beta
 
 re_digits = re.compile(r"\d+")
 re_x_proj = re.compile(r"(.*)_([qkv]_proj)$")

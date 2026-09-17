@@ -258,10 +258,6 @@ def network_restore_weights_from_backup(self: Union[torch.nn.Conv2d, torch.nn.Li
                 self.bias = None
     return self
 
-def network_reset_cached_weight(self: Union[torch.nn.Conv2d, torch.nn.Linear]):
-    self.network_current_names = ()
-    self.network_weights_backup = None
-    self.network_bias_backup = None
 
 POPKEYS=[
 "betas",
